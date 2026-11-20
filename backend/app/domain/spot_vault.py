@@ -99,6 +99,7 @@ class SpotPosition:
     opened_at_ist: str = ""
     closed_at_ist: Optional[str] = None
     rationale: str = ""
+    tg_message_id: Optional[int] = None
 
 
 def compute_net_target_price(total_invested: Decimal, total_qty: Decimal, target_net_pct: Decimal) -> Decimal:
@@ -279,20 +280,23 @@ class SpotVaultEngine:
             rationale=rationale or f"Spot Tranche 1/{max_tr} • Zero Stop-Loss • Net +{tgt_pct}% Target",
         )
         self.positions[pid] = pos
-        if store and store.is_configured():
-            store.upsert_spot_position(pos)
         if tg and tg.enabled:
             inr_val = _q(tr1_usdt * usdt_inr, "1")
             ts_str = now_ist.strftime("%I:%M %p IST")
+            tg_res = None
             if hasattr(tg, "send_html"):
                 msg = (
                     f"🟡🪙 <b>SPOT VAULT BUY ({pos.tranches_filled}/{pos.max_tranches})</b> • <code>{sym}</code>\n"
                     f"Buy <code>${pos.avg_entry_price}</code> | Target (+{pos.target_net_pct}%) <code>${pos.net_target_price}</code> | SL: <b>NONE</b>\n"
                     f"<i>Invested ${tr1_usdt} (₹{inr_val}) of ${budget} • {ts_str}</i>"
                 )
-                tg.send_html(msg, btn_label="🪙 Open Spot Vault")
+                tg_res = tg.send_html(msg, btn_label="🪙 Open Spot Vault")
             else:
-                tg.send_alert(f"SPOT BUY — {sym}", f"Buy ${pos.avg_entry_price}", ts_str)
+                tg_res = tg.send_alert(f"SPOT BUY — {sym}", f"Buy ${pos.avg_entry_price}", ts_str)
+            if isinstance(tg_res, dict) and tg_res.get("message_id"):
+                pos.tg_message_id = int(tg_res["message_id"])
+        if store and store.is_configured():
+            store.upsert_spot_position(pos)
         return pos
 
     def add_dca_tranche(
@@ -336,7 +340,7 @@ class SpotVaultEngine:
                     f"New Avg <code>${pos.avg_entry_price}</code> | Target <code>${pos.net_target_price}</code> | SL: <b>NONE</b>\n"
                     f"<i>Added ${add_usdt} @ ${ltp} • Total ${pos.total_invested_usdt} (₹{inr_tot}) • {ts_str}</i>"
                 )
-                tg.send_html(msg, btn_label="🪙 Open Spot Vault")
+                tg.send_html(msg, btn_label="🪙 Open Spot Vault", reply_to_message_id=pos.tg_message_id)
             else:
                 tg.send_alert(f"SPOT DCA #{pos.tranches_filled} — {pos.symbol}", f"Avg ${pos.avg_entry_price}", ts_str)
         return pos
@@ -393,6 +397,7 @@ class SpotVaultEngine:
                     caption_html=cap,
                     ts_label=ts_str,
                     btn_label="🪙 Open Spot Vault",
+                    reply_to_message_id=pos.tg_message_id,
                 )
             else:
                 tg.send_alert(f"SPOT {reason} — {pos.symbol}", f"Net {sign}${net_pnl}", ts_str)
