@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TRADEIQ Crypto v1.0 — 24/7 USDT-M Paper Desk</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    [hidden]{display:none !important}
+    body { margin: 0; background: #05070B; color: #F8FAFC; font-family: 'Inter', sans-serif; overflow-x: hidden; }
+    .mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+    .card { background: #0E131F; border: 1px solid #1E293B; border-radius: 16px; }
+    .drawer-bg { background: rgba(2,6,15,0.78); backdrop-filter: blur(6px); }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Owner Login Gate -->
+  <div id="login-view" class="min-h-screen flex items-center justify-center p-4">
+    <div class="card w-full max-w-sm p-6 space-y-4">
+      <div>
+        <div class="text-xl font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs px-2 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700]">CRYPTO v1.0</span></div>
+        <p class="text-xs text-slate-400 mt-1">Owner Password Required • Paper Trading Only</p>
+      </div>
+      <div id="login-err" class="hidden text-xs text-[#FF3B5C] bg-[#FF3B5C]/10 border border-[#FF3B5C]/30 rounded-xl px-3 py-2"></div>
+      <input id="login-pwd" type="password" placeholder="Enter Owner Password" class="w-full px-3.5 py-2.5 rounded-xl bg-[#090D16] border border-[#24324A] text-white text-sm focus:outline-none focus:border-[#00E676]" />
+      <button id="login-btn" class="w-full py-2.5 rounded-xl bg-[#00E676] text-[#04120B] font-extrabold text-sm">Unlock Crypto Desk</button>
+    </div>
+  </div>
+
+  <!-- Authenticated App View (Hidden until Owner JWT verified) -->
+  <div id="app-view" hidden class="min-h-screen flex flex-col">
+    <header class="sticky top-0 z-30 bg-[#05070B]/95 backdrop-blur-md border-b border-[#1E293B]">
+      <div class="max-w-5xl mx-auto px-3 sm:px-5 h-14 flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <button id="menu-open" class="w-10 h-10 rounded-xl bg-[#0E131F] border border-[#243045] flex items-center justify-center text-white shrink-0">☰</button>
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-base sm:text-lg font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span></span>
+              <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700] border border-[#F5B700]/35">CRYPTO v1.0</span>
+            </div>
+            <p id="sec-label" class="text-[11px] text-slate-400 truncate leading-none mt-0.5">Crypto Trading Desk • USDT-M Paper</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B]">
+            <span id="ws-dot" class="w-2 h-2 rounded-full bg-[#00E676]"></span>
+            <span id="ws-txt" class="text-xs font-bold text-[#00E676] mono">24/7 LIVE</span>
+          </div>
+          <button id="scan-btn" class="px-3 py-1.5 rounded-xl bg-[#00E676] text-[#04120B] font-bold text-xs">Scan</button>
+        </div>
+      </div>
+      <div class="border-t border-[#141C2D] bg-[#080C15]">
+        <div id="majors-bar" class="max-w-5xl mx-auto px-3 sm:px-5 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar"></div>
+      </div>
+    </header>
+
+    <!-- Slide-out Drawer -->
+    <div id="drawer" class="fixed inset-0 z-50 hidden">
+      <div id="drawer-bg" class="absolute inset-0 drawer-bg"></div>
+      <aside class="relative w-72 max-w-[85vw] h-full bg-[#090D16] border-r border-[#1E293B] p-4 flex flex-col justify-between overflow-y-auto">
+        <div>
+          <div class="flex items-center justify-between pb-4 border-b border-[#1E293B]">
+            <div class="text-lg font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs text-[#F5B700]">CRYPTO</span></div>
+            <button id="menu-close" class="w-8 h-8 rounded-lg bg-[#141B2D] text-slate-300">✕</button>
+          </div>
+          <nav id="drawer-nav" class="mt-4 space-y-1.5"></nav>
+        </div>
+        <div class="pt-4 border-t border-[#1E293B] space-y-2">
+          <div class="flex justify-between text-xs px-2"><span class="text-slate-400">Supabase</span><span class="text-[#00E676] font-bold">PROTECTED</span></div>
+          <button id="logout-btn" class="w-full py-2 rounded-xl bg-[#141B2D] border border-[#263449] text-xs font-bold text-slate-300">Lock / Sign Out</button>
+        </div>
+      </aside>
+    </div>
+
+    <div id="toast" class="fixed bottom-4 right-4 z-50 hidden max-w-xs bg-[#141B2D] border border-[#00E676]/45 text-white px-4 py-3 rounded-xl shadow-2xl text-xs font-semibold"></div>
+    <main id="content" class="flex-1 max-w-5xl w-full mx-auto px-3 sm:px-5 py-4 space-y-4"></main>
+  </div>
+
+  <script>
+    const TOKEN_KEY = 'tradeiq.crypto.session';
+    let authToken = sessionStorage.getItem(TOKEN_KEY) || null;
+    let section = 'desk';
+    let horizon = 'intraday';
+    let labFilter = 'ALL';
+    let chartSym = 'BTCUSDT';
+    let overview = null;
+    let boomData = [];
+    let catalystData = [];
+    let connData = null;
+    let chartObj = null;
+    let ws = null;
+
+    function showLogin(msg) {
+      authToken = null;
+      sessionStorage.removeItem(TOKEN_KEY);
+      document.getElementById('app-view').hidden = true;
+      document.getElementById('login-view').hidden = false;
+      const err = document.getElementById('login-err');
+      if (msg) { err.textContent = msg; err.classList.remove('hidden'); }
+      else err.classList.add('hidden');
+    }
+
+    function showToast(m) {
+      const t = document.getElementById('toast');
+      t.textContent = m; t.classList.remove('hidden');
+      clearTimeout(t._tm); t._tm = setTimeout(() => t.classList.add('hidden'), 3000);
+    }
+
+    async function apiFetch(path, opts = {}) {
+      if (!authToken) { showLogin('Please sign in.'); throw new Error('401'); }
+      const headers = Object.assign({ 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken }, opts.headers || {});
+      const res = await fetch(path, Object.assign({}, opts, { headers }));
+      if (res.status === 401) { showLogin('Session expired. Sign in again.'); throw new Error('401'); }
+      return res.json();
+    }
+
+    document.getElementById('login-btn').addEventListener('click', async () => {
+      const pwd = document.getElementById('login-pwd').value;
+      const res = await fetch('/api/v1/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd })
+      });
+      if (!res.ok) { showLogin('Incorrect owner password.'); return; }
+      const d = await res.json();
+      authToken = d.access_token;
+      sessionStorage.setItem(TOKEN_KEY, authToken);
+      bootApp();
+    });
+
+    function fmtU(n) { const v = Number(n || 0); return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function fmtR(n) { const v = Number(n || 0); return (v < 0 ? '-' : '') + '₹' + Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
+
+    function renderMajors() {
+      const bar = document.getElementById('majors-bar');
+      const majors = overview?.majors || [];
+      const inr = overview?.usdt_inr || '85.20';
+      bar.innerHTML = majors.map(m => {
+        const up = Number(m.change_24h_pct) >= 0;
+        return `<button onclick="openChart('${m.symbol}')" class="shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B]">
+          <span class="text-[11px] font-bold text-slate-300">${m.symbol.replace('USDT','')}</span>
+          <span class="text-xs font-bold text-white mono">$${m.ltp}</span>
+          <span class="text-[11px] font-bold mono px-1.5 py-0.5 rounded ${up ? 'text-[#00E676] bg-[#00E676]/10' : 'text-[#FF3B5C] bg-[#FF3B5C]/10'}">${up ? '+' : ''}${m.change_24h_pct}%</span>
+        </button>`;
+      }).join('') + `<div class="shrink-0 px-2.5 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B] text-[11px]"><span class="text-slate-400">USDT/INR </span><strong class="text-[#F5B700] mono">₹${inr}</strong></div>`;
+    }
+
+    function renderNav() {
+      const items = [
+        { id: 'desk', icon: '⚡', t: 'Crypto Trading Desk', s: 'Intraday • Reversion • Trend • Regime' },
+        { id: 'boom', icon: '🚀', t: 'Daily Boom Radar', s: 'Small/Mid-Cap Explosive Movers (1x)' },
+        { id: 'catalyst', icon: '🌍', t: 'Macro & Catalyst Radar', s: 'Musk • Trump • Fed • SEC News' },
+        { id: 'lab', icon: '🧪', t: 'Accuracy Lab vs Elite TG', s: `Top ${overview?.tg_daily_cap || 6}/day TG vs All Lab` },
+        { id: 'chart', icon: '📊', t: 'Live Chart & L2 Depth', s: 'Candles + Orderbook' },
+        { id: 'portfolio', icon: '💼', t: 'Portfolio & Supabase', s: 'Settings & Permanent Ledger' },
+        { id: 'system', icon: '⚙️', t: 'System & Exchange Feeds', s: overview?.active_exchange || 'Bybit/OKX/Kraken' }
+      ];
+      document.getElementById('drawer-nav').innerHTML = items.map(i => `
+        <button onclick="goSec('${i.id}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left border ${section === i.id ? 'bg-[#00E676]/15 border-[#00E676]/45 text-white' : 'border-transparent text-slate-300'}">
+          <span>${i.icon}</span><div class="min-w-0"><div class="text-sm font-bold truncate">${i.t}</div><div class="text-[11px] text-slate-400 truncate">${i.s}</div></div>
+        </button>`).join('');
+    }
+
+    window.goSec = async (s) => {
+      section = s;
+      document.getElementById('drawer').classList.add('hidden');
+      if (s === 'boom') { const r = await apiFetch('/api/v1/crypto/boom'); boomData = r.items || []; }
+      if (s === 'catalyst') { const r = await apiFetch('/api/v1/crypto/catalysts'); catalystData = r.items || []; }
+      if (s === 'system') { connData = await apiFetch('/api/v1/system/connectivity'); }
+      render();
+      if (s === 'chart') loadChart();
+    };
+    window.setHor = (h) => { horizon = h; render(); };
+    window.setLabF = (f) => { labFilter = f; render(); };
+    window.openChart = (sym) => { chartSym = sym; goSec('chart'); };
+
+    window.closePos = async (pid) => {
+      await apiFetch('/api/v1/paper/positions/' + encodeURIComponent(pid) + '/close', { method: 'POST', body: '{}' });
+      showToast('Position closed & updated in Supabase');
+      await refreshCore();
+    };
+    window.delPos = async (pid) => {
+      await apiFetch('/api/v1/paper/positions/' + encodeURIComponent(pid), { method: 'DELETE' });
+      showToast('Deleted manually from Supabase');
+      await refreshCore();
+    };
+    window.saveCfg = async () => {
+      await apiFetch('/api/v1/crypto/config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          starting_usdt: Number(document.getElementById('c-start').value),
+          per_trade_usdt: Number(document.getElementById('c-per').value),
+          max_leverage: Number(document.getElementById('c-lev').value),
+          telegram_daily_cap: Number(document.getElementById('c-tg').value)
+        })
+      });
+      showToast('Settings saved');
+      await refreshCore();
+    };
+
+    async function loadChart() {
+      const r = await apiFetch('/api/v1/crypto/chart/' + encodeURIComponent(chartSym) + '?interval=15m');
+      const d = r.depth || {};
+      const c = r.candles || [];
+      document.getElementById('content').innerHTML = `
+        <div class="card p-4">
+          <div class="flex flex-wrap justify-between gap-2 mb-3">
+            <div class="text-base font-extrabold text-white">${r.symbol} • 15m Live Chart</div>
+            <div class="flex gap-1.5">${['BTCUSDT','ETHUSDT','SOLUSDT','DOGEUSDT','PEPEUSDT'].map(s => `<button onclick="openChart('${s}')" class="px-2.5 py-1 rounded-lg text-xs font-bold border ${chartSym===s?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${s.replace('USDT','')}</button>`).join('')}</div>
+          </div>
+          <div class="relative h-64 bg-[#070B12] rounded-xl p-2 border border-[#1B2436]"><canvas id="c-cv"></canvas></div>
+        </div>
+        <div class="card p-4">
+          <div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">L2 Orderbook Depth</span><span class="text-xs font-bold text-[#00E676]">${d.pressure || 'LIVE'} (${d.buy_pct || 50}% Buy)</span></div>
+          <div class="grid grid-cols-2 gap-3 text-xs mono">
+            <div class="space-y-1">${(d.bids||[]).map(b => `<div class="flex justify-between px-2 py-1 rounded bg-[#00E676]/10"><span class="text-[#00E676]">$${b.price}</span><span>${b.qty}</span></div>`).join('')}</div>
+            <div class="space-y-1">${(d.asks||[]).map(a => `<div class="flex justify-between px-2 py-1 rounded bg-[#FF3B5C]/10"><span class="text-[#FF3B5C]">$${a.price}</span><span>${a.qty}</span></div>`).join('')}</div>
+          </div>
+        </div>`;
+      const cv = document.getElementById('c-cv');
+      if (chartObj) chartObj.destroy();
+      chartObj = new Chart(cv, {
+        type: 'line',
+        data: { labels: c.map((_, i) => i + 1), datasets: [{ label: r.symbol, data: c.map(x => Number(x.c)), borderColor: '#00E676', backgroundColor: 'rgba(0,230,118,0.12)', fill: true, tension: 0.25 }] },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#CBD5E1' } } }, scales: { x: { ticks: { color: '#64748B' } }, y: { ticks: { color: '#94A3B8' } } } }
+      });
+    }
+
+    function render() {
+      renderMajors();
+      renderNav();
+      const led = overview?.ledger || {};
+      const openPos = led.open_positions_live || [];
+      const closed = led.closed_trades || [];
+      const el = document.getElementById('content');
+
+      if (section === 'desk') {
+        const netU = Number(led.total_net_usdt || 0);
+        const byH = (h) => openPos.filter(p => p.horizon_bucket === h);
+        const list = byH(horizon);
+        el.innerHTML = `
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Equity (USDT)</div><div class="text-lg font-extrabold text-white mono mt-1">${fmtU(led.total_equity_usdt || 1000)}</div><div class="text-[10px] text-[#F5B700] mono">≈ ${fmtR(led.total_equity_inr || 85200)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Net P&L</div><div class="text-lg font-extrabold mono mt-1 ${netU>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${netU>=0?'+':''}${fmtU(netU)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtR(led.total_net_inr || 0)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Telegram Elite Today</div><div class="text-lg font-extrabold text-[#F5B700] mono mt-1">${overview?.tg_sent_today || 0} / ${overview?.tg_daily_cap || 6}</div><div class="text-[10px] text-slate-400">A+ Trades Sent</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Backend Lab Accuracy</div><div class="text-lg font-extrabold text-[#00E676] mono mt-1">${led.accuracy_pct || '0.0'}%</div><div class="text-[10px] text-slate-400">${led.wins||0}W/${led.losses||0}L • ${openPos.length} Open</div></div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button onclick="goSec('boom')" class="card p-3.5 border-[#A855F7]/40 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">🚀 Daily Boom Radar</div><div class="text-[11px] text-slate-400 mt-0.5">Small/low-price explosive movers (Strict 1x)</div></div><span class="text-xs font-bold text-[#D8B4FE]">Open →</span></button>
+            <button onclick="goSec('catalyst')" class="card p-3.5 border-[#F5B700]/35 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">⚡ Macro &amp; Catalyst Radar</div><div class="text-[11px] text-slate-400 mt-0.5">Musk / Trump / Fed / SEC live momentum</div></div><span class="text-xs font-bold text-[#F5B700]">Open →</span></button>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            ${[
+              { id:'intraday', l:'Intraday', s:'2–12h', c:byH('intraday').length, col:'#00E676' },
+              { id:'reversion', l:'Short Reversion', s:'1–4d', c:byH('reversion').length, col:'#00D4FF' },
+              { id:'swing', l:'Trend Swing', s:'3–14d', c:byH('swing').length, col:'#F5B700' },
+              { id:'boom', l:'Boom (1x)', s:'High Vol', c:byH('boom').length, col:'#A855F7' }
+            ].map(t => `<button onclick="setHor('${t.id}')" class="p-3 rounded-2xl border text-left" style="background:${horizon===t.id?'#141B2D':'#0E131F'};border-color:${horizon===t.id?t.col:'#1E293B'}"><div class="flex justify-between"><span class="text-xs font-extrabold text-white">${t.l}</span><span class="text-[11px] mono font-bold" style="color:${t.col}">${t.c}</span></div><div class="text-[10px] text-slate-400">${t.s}</div></button>`).join('')}
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            ${list.length === 0 ? `<div class="card p-5 text-center text-xs text-slate-400 md:col-span-2">No open ${horizon} positions right now. 24/7 scanner checks every 5 min (or tap Scan).</div>` : list.map(p => {
+              const nu = Number(p.unrealised_net_usdt || 0);
+              return `<div class="card p-4">
+                <div class="flex justify-between"><div><span class="text-base font-extrabold text-white">${p.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">${p.direction} ${p.leverage}x</span><div class="text-[11px] text-slate-400">${p.engine_code}</div></div>
+                <div class="text-right mono"><div class="text-base font-extrabold ${nu>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${nu>=0?'+':''}${fmtU(nu)}</div><div class="text-[10px] text-slate-400">≈ ${fmtR(p.unrealised_net_inr)}</div></div></div>
+                <div class="mt-2 flex gap-1.5 flex-wrap"><span class="text-[10px] px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] font-semibold">⏱ ${p.hold_horizon}</span><span class="text-[10px] px-2 py-0.5 rounded ${p.tier==='ELITE_TG'?'bg-[#F5B700]/15 text-[#F5B700]':'bg-slate-800 text-slate-300'} font-bold">${p.tier==='ELITE_TG'?'⭐ ELITE TG':'🧪 BACKEND LAB'}</span></div>
+                <div class="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-[#1E293B] text-center text-xs mono">
+                  <div><div class="text-[10px] text-slate-500">Entry</div>$${p.entry_fill_price}</div>
+                  <div><div class="text-[10px] text-slate-500">LTP</div>$${p.current_ltp}</div>
+                  <div><div class="text-[10px] text-slate-500">SL</div><span class="text-[#FF3B5C]">$${p.stop_loss}</span></div>
+                  <div><div class="text-[10px] text-slate-500">Target</div><span class="text-[#00E676]">$${p.target_price}</span></div>
+                </div>
+                <div class="mt-3 flex gap-2"><button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] text-xs font-bold text-white">📊 Chart</button><button onclick="closePos('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#FF3B5C]/15 text-[#FF3B5C] text-xs font-bold">Exit</button></div>
+              </div>`;
+            }).join('')}
+          </div>`;
+      } else if (section === 'boom') {
+        el.innerHTML = `<div class="card p-4 border-[#A855F7]/40"><h2 class="text-base font-extrabold text-white">🚀 Daily Boom Radar (Strict 1x Micro-Size)</h2><p class="text-xs text-slate-400 mt-0.5">Live high-volatility breakout scanner for small/mid-cap USDT coins.</p></div>
+          <div class="space-y-2.5">${boomData.map(b => `<div class="card p-4"><div class="flex justify-between items-start gap-2"><div><span class="text-base font-extrabold text-white">${b.symbol}</span> <span class="text-xs mono text-slate-300">$${b.ltp}</span> <span class="text-xs mono font-bold text-[#00E676]">${Number(b.change_24h_pct)>=0?'+':''}${b.change_24h_pct}%</span><div class="text-[11px] text-slate-400 mt-1">${(b.checks||[]).join(' • ')}</div></div><span class="text-[10px] font-bold px-2 py-1 rounded bg-[#A855F7]/20 text-[#D8B4FE]">${b.stage} (${b.score})</span></div></div>`).join('')}</div>`;
+      } else if (section === 'catalyst') {
+        el.innerHTML = `<div class="card p-4 border-[#F5B700]/35"><h2 class="text-base font-extrabold text-white">⚡ Macro &amp; Catalyst Radar (Musk / Trump / Fed / SEC)</h2></div>
+          <div class="space-y-2.5">${catalystData.map(n => `<a href="${n.url||'#'}" target="_blank" rel="noreferrer" class="block card p-4"><div class="flex justify-between text-[10px]"><span class="font-bold text-[#F5B700]">${n.tag}</span><span class="text-slate-400">${n.source}</span></div><div class="text-sm font-bold text-white mt-1">${n.headline}</div><div class="mt-2 flex gap-1.5 flex-wrap text-[10px]">${(n.mapped_coins||[]).map(c=>`<span class="px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] mono font-bold">${c}</span>`).join('')}<span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 font-bold">${n.impact}</span></div></a>`).join('')}</div>`;
+      } else if (section === 'lab') {
+        const list = openPos.filter(p => labFilter==='ALL' || p.tier===labFilter);
+        el.innerHTML = `<div class="card p-4 flex justify-between items-center flex-wrap gap-2"><div><h2 class="text-base font-extrabold text-white">🧪 Backend Accuracy Lab vs ⭐ Telegram Elite</h2></div><div class="flex gap-1.5">${['ALL','ELITE_TG','BACKEND_LAB'].map(f=>`<button onclick="setLabF('${f}')" class="px-3 py-1 rounded-xl text-xs font-bold border ${labFilter===f?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${f}</button>`).join('')}</div></div>
+          <div class="space-y-2">${list.map(p=>`<div class="card p-3.5 flex justify-between items-center"><div><div class="text-sm font-bold text-white">${p.symbol} <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#141B2D] text-[#F5B700]">${p.tier}</span></div><div class="text-[11px] text-slate-400">${p.engine_code} • Score ${p.score}</div></div><div class="text-right mono text-sm font-bold ${Number(p.unrealised_net_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtU(p.unrealised_net_usdt)}</div></div>`).join('')}</div>`;
+      } else if (section === 'portfolio') {
+        const cfg = overview?.config || {};
+        el.innerHTML = `<div class="card p-4"><h2 class="text-base font-extrabold text-white">Portfolio &amp; Permanent Supabase Sync</h2><p class="text-xs text-slate-400 mt-0.5">Trades survive every code push &amp; Render restart. Only manual Delete removes a trade.</p>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-xs">
+            <div><label class="text-slate-400">Start USDT</label><input id="c-start" type="number" value="${cfg.starting_usdt||1000}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+            <div><label class="text-slate-400">Per-Trade USDT</label><input id="c-per" type="number" value="${cfg.per_trade_usdt||200}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+            <div><label class="text-slate-400">Max Leverage</label><input id="c-lev" type="number" step="0.5" value="${cfg.max_leverage||2}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+            <div><label class="text-slate-400">TG Elite Cap/24h</label><input id="c-tg" type="number" value="${cfg.telegram_daily_cap||6}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+          </div>
+          <button onclick="saveCfg()" class="mt-3 px-4 py-2 rounded-xl bg-[#00E676] text-[#04120B] font-bold text-xs">Save Settings</button></div>
+          <div class="card p-4"><h3 class="text-sm font-extrabold text-white mb-2">Closed Ledger (${closed.length})</h3><div class="space-y-2">${closed.map(c=>`<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><span class="text-sm font-bold text-white">${c.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800">${c.outcome}</span><div class="text-[11px] text-slate-500">${c.engine_code} • ${c.exit_reason}</div></div><div class="flex items-center gap-3"><span class="mono text-sm font-bold ${Number(c.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtU(c.net_pnl_usdt)}</span><button onclick="delPos('${c.position_id}')" class="text-[10px] text-slate-400 hover:text-[#FF3B5C]">Delete</button></div></div>`).join('')}</div></div>`;
+      } else if (section === 'system') {
+        el.innerHTML = `<div class="card p-4"><div class="flex justify-between items-center"><h2 class="text-base font-extrabold text-white">System &amp; 3-Tier Exchange Feeds</h2><button onclick="apiFetch('/api/v1/telegram/test',{method:'POST',body:'{}'}).then(()=>showToast('Telegram test sent'))" class="px-3 py-1.5 rounded-xl bg-[#00D4FF]/15 text-[#00D4FF] text-xs font-bold">Test Telegram</button></div>
+          <div class="mt-3 space-y-2">${(connData?.services||[]).map(s=>`<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><div class="text-xs font-bold text-white">${s.name}</div><div class="text-[11px] text-slate-400">${s.detail}</div></div><span class="text-[10px] font-bold px-2 py-1 rounded ${s.ok?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${s.ok?'CONNECTED':'FAILOVER'}</span></div>`).join('')}</div></div>`;
+      }
+    }
+
+    async function refreshCore() {
+      overview = await apiFetch('/api/v1/crypto/overview');
+      render();
+    }
+
+    function connectWs() {
+      if (!authToken) return;
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/api/v1/ws/live?token=${encodeURIComponent(authToken)}`);
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.type === 'LIVE_TICK' && overview) {
+            overview.majors = m.majors; overview.ledger = m.ledger; overview.usdt_inr = m.usdt_inr;
+            renderMajors();
+            if (section === 'desk') render();
+          }
+        } catch {}
+      };
+      ws.onclose = () => { setTimeout(connectWs, 3000); };
+    }
+
+    async function bootApp() {
+      document.getElementById('login-view').hidden = true;
+      document.getElementById('app-view').hidden = false;
+      await refreshCore();
+      connectWs();
+      setInterval(refreshCore, 30000);
+    }
+
+    document.getElementById('menu-open').addEventListener('click', () => document.getElementById('drawer').classList.remove('hidden'));
+    document.getElementById('menu-close').addEventListener('click', () => document.getElementById('drawer').classList.add('hidden'));
+    document.getElementById('drawer-bg').addEventListener('click', () => document.getElementById('drawer').classList.add('hidden'));
+    document.getElementById('logout-btn').addEventListener('click', () => showLogin('Signed out.'));
+    document.getElementById('scan-btn').addEventListener('click', async () => {
+      showToast('Running 4-Engine + Boom + Catalyst scan...');
+      const r = await apiFetch('/api/v1/crypto/scan', { method: 'POST', body: JSON.stringify({ execute_entries: true }) });
+      showToast(`Scan done: ${r.signals_evaluated} evaluated • ${r.opened_count} opened`);
+      await refreshCore();
+    });
+
+    if (authToken) bootApp();
+  </script>
+</body>
+</html>
