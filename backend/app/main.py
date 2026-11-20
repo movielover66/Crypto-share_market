@@ -207,15 +207,21 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             "LONG": sum(1 for p in open_pos_list if p.direction == "LONG"),
             "SHORT": sum(1 for p in open_pos_list if p.direction == "SHORT"),
         }
+        boom_open_cnt = sum(1 for p in open_pos_list if p.horizon_bucket == "boom")
         for sig in signals:
-            if len(open_syms) >= eng.config.max_open_positions:
-                break
+            is_boom = sig.engine_code == "BOOM_RADAR"
+            if is_boom:
+                if boom_open_cnt >= 2:
+                    continue
+            elif len(open_syms) >= eng.config.max_open_positions:
+                continue
             if sig.status != "CONFIRMED" or sig.symbol in open_syms or sig.symbol in risk_blocked:
                 continue
             # Institutional Same-Direction Correlation Cap: Max 2 simultaneous LONGs or 2 SHORTs
-            if dir_counts.get(sig.direction, 0) >= 2 and sig.engine_code != "BOOM_RADAR":
+            if dir_counts.get(sig.direction, 0) >= 2 and not is_boom:
                 continue
-            if sig.direction == "LONG" and not regime.allow_longs and sig.engine_code != "ENGINE_4_SHADOW_SWEEP":
+            # Boom Radar (1x micro-size + Footprint Anti-Dump) & Engine 4 Shadow Sweep can trade decoupled moves even in BTC Bear regime
+            if sig.direction == "LONG" and not regime.allow_longs and sig.engine_code not in ("ENGINE_4_SHADOW_SWEEP", "BOOM_RADAR"):
                 continue
             if sig.direction == "SHORT" and not regime.allow_shorts and sig.engine_code != "ENGINE_4_SHADOW_SWEEP":
                 continue
@@ -232,6 +238,8 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             pos = eng.open_position(sig, now_ist, paper_store=store, telegram_notifier=tg, usdt_inr=usdt_inr)
             open_syms.add(pos.symbol)
             dir_counts[pos.direction] = dir_counts.get(pos.direction, 0) + 1
+            if is_boom:
+                boom_open_cnt += 1
             opened.append({"position_id": pos.position_id, "symbol": pos.symbol, "tier": pos.tier, "engine": pos.engine_code})
 
     return {
