@@ -231,12 +231,13 @@ class MultiExchangeCryptoProvider:
 
         key = (sym, interval)
         cached = self.candle_cache.get(key)
-        if cached and (time.time() - cached[0]) < 35.0:
+        ttl = 8.0 if interval == "1m" else 35.0
+        if cached and (time.time() - cached[0]) < ttl:
             return cached[1]
 
         # 1. Primary: OKX v5 Candles (fast on Render US IPs)
         okx_sym = sym[:-4] + "-USDT-SWAP" if sym.endswith("USDT") else sym
-        o_int = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}.get(interval, "15m")
+        o_int = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}.get(interval, "15m")
         odata = _http_get_json(f"https://www.okx.com/api/v5/market/candles?instId={urllib.parse.quote(okx_sym)}&bar={o_int}&limit={min(limit, 100)}", timeout=5.0)
         orows = (odata or {}).get("data") or []
         out: List[CryptoCandle] = []
@@ -254,7 +255,7 @@ class MultiExchangeCryptoProvider:
                 return out
 
         # 2. Failover: Bybit v5 Candles
-        b_int = {"5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}.get(interval, "15")
+        b_int = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}.get(interval, "15")
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={urllib.parse.quote(sym)}&interval={b_int}&limit={limit}"
         data = _http_get_json(url, timeout=5.0)
         rows = (((data or {}).get("result") or {}).get("list")) or []
@@ -274,7 +275,7 @@ class MultiExchangeCryptoProvider:
 
         # OKX fallback
         okx_sym = sym[:-4] + "-USDT-SWAP" if sym.endswith("USDT") else sym
-        o_int = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}.get(interval, "15m")
+        o_int = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}.get(interval, "15m")
         odata = _http_get_json(f"https://www.okx.com/api/v5/market/candles?instId={urllib.parse.quote(okx_sym)}&bar={o_int}&limit={min(limit, 100)}", timeout=5.0)
         orows = (odata or {}).get("data") or []
         if orows:
@@ -425,7 +426,7 @@ class MultiExchangeCryptoProvider:
         base = float(self.ticker_cache.get(symbol, CryptoTicker(symbol, Decimal("100"), Decimal("98"), Decimal("2"), Decimal("1000000"), Decimal("0.0001"), Decimal("100000"), "DEMO", time.time())).ltp)
         out: List[CryptoCandle] = []
         now_ms = int(time.time() * 1000)
-        step_ms = {"5m": 300000, "15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}.get(interval, 900000)
+        step_ms = {"1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}.get(interval, 900000)
         for i in range(limit):
             drift = 0.88 + (i / max(1, limit)) * 0.12 + math.sin(i * 0.35) * 0.008
             c = base * drift
