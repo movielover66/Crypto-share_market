@@ -123,7 +123,14 @@ def evaluate_btc_regime(btc_4h: List[CryptoCandle], btc_ticker: Optional[CryptoT
     return CryptoRegime("RANGE_BOUND", True, True, ltp, funding_pct, f"BTC consolidating near 50-EMA (${ltp:.2f}) — favoring Reversion & selective breakouts.")
 
 
-def evaluate_engine_1_breakout(symbol: str, c15: List[CryptoCandle], depth: Dict[str, Any]) -> CryptoSignal:
+def evaluate_engine_1_breakout(
+    symbol: str,
+    c15: List[CryptoCandle],
+    depth: Dict[str, Any],
+    c1h: Optional[List[CryptoCandle]] = None,
+    footprint: Optional[Dict[str, Any]] = None,
+    change_24h_pct: Decimal = Decimal("0"),
+) -> CryptoSignal:
     passed: List[str] = []
     failed: List[str] = []
     if len(c15) < 20:
@@ -181,12 +188,40 @@ def evaluate_engine_1_breakout(symbol: str, c15: List[CryptoCandle], depth: Dict
     else:
         failed.append(f"Vol {rel_vol}x (<1.5x)")
 
+    # 1h Multi-Timeframe Trend Alignment (eliminates 15m noise whipsaws)
+    if c1h and len(c1h) >= 22:
+        ema20_1h = _ema([c.close for c in c1h], 20) or last.close
+        if (direction == "LONG" and last.close >= ema20_1h) or (direction == "SHORT" and last.close <= ema20_1h):
+            passed.append("1h 20-EMA Trend Aligned")
+            score += 8
+        else:
+            failed.append("Counter to 1h 20-EMA Trend")
+            score -= 10
+
+    # OKX Tick Footprint / CVD Alignment
+    dpct = float((footprint or {}).get("delta_pct", 0.0))
+    if (direction == "LONG" and dpct >= 5.0) or (direction == "SHORT" and dpct <= -5.0):
+        passed.append(f"Footprint CVD {dpct:+.1f}% Confirmed")
+        score += 8
+    elif (direction == "LONG" and dpct <= -15.0) or (direction == "SHORT" and dpct >= 15.0):
+        failed.append(f"Footprint Absorption Against ({dpct:+.1f}%)")
+        score -= 15
+
+    # Exhaustion / Bottom-Short & Top-Long Chase Guard
+    if direction == "SHORT" and change_24h_pct <= Decimal("-3.5"):
+        failed.append(f"Exhausted Dump ({change_24h_pct}% 24h) — No Bottom Short")
+        score -= 25
+    elif direction == "LONG" and change_24h_pct >= Decimal("8.0"):
+        failed.append(f"Overextended Pump (+{change_24h_pct}% 24h) — No Top Chase")
+        score -= 20
+
     entry = _quant(last.close)
-    risk = max(atr * Decimal("1.35"), entry * Decimal("0.008"))
+    # Crypto-grade stop-loss floor (1.6% min / 1.85x ATR) so normal 15m noise wicks don't hunt SL
+    risk = max(atr * Decimal("1.85"), entry * Decimal("0.016"))
     sl = _quant(entry - risk if direction == "LONG" else entry + risk)
     target = _quant(entry + risk * Decimal("2.4") if direction == "LONG" else entry - risk * Decimal("2.4"))
     net_rr = Decimal("2.25")
-    status = "CONFIRMED" if (score >= 82 and len(failed) <= 1) else ("WATCHLIST" if score >= 68 else "REJECTED")
+    status = "CONFIRMED" if (score >= 84 and len(failed) <= 1) else ("WATCHLIST" if score >= 68 else "REJECTED")
     return CryptoSignal(
         symbol=symbol, engine_code="ENGINE_1_BREAKOUT", horizon_bucket="intraday",
         hold_horizon="Intraday • 2–12 hrs (Session Breakout)", direction=direction,
@@ -345,3 +380,81 @@ def evaluate_boom_radar(symbol: str, c15: List[CryptoCandle], ticker: Optional[C
         "target_price": str(target),
         "checks": checks or ["Monitoring accumulation base"],
     }
+
+
+def evaluate_engine_4_shadow_sweep(
+    symbol: str,
+    c15: List[CryptoCandle],
+    footprint: Optional[Dict[str, Any]] = None,
+    crowd: Optional[Dict[str, Any]] = None,
+) -> CryptoSignal:
+    """
+    Engine 4: Institutional Shadow Sweep + Footprint CVD Absorption Detector.
+    Catches retail stop-loss hunts ('Through & Back In' liquidity sweeps) confirmed by OKX tick delta:
+    - Sell-Side Sweep (Bullish Reversal): wick pierces below 20-bar Swing Low AND closes back above it
+      with >= 40% lower wick + positive Footprint Buy Absorption -> LONG.
+    - Buy-Side Sweep (Bearish Reversal): wick pierces above 20-bar Swing High AND closes back below it
+      with >= 40% upper wick + negative Footprint Sell Absorption -> SHORT.
+    """
+    if len(c15) < 25:
+        return CryptoSignal(symbol, "ENGINE_4_SHADOW_SWEEP", "intraday", "Shadow Sweep • 2–12 hrs", "LONG", "REJECTED", 0, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("1.5"), [], ["Insufficient 15m candles"], "Need 25+ 15m candles.")
+
+    last = c15[-1]
+    prior = c15[-22:-1]
+    swing_lo = min(c.low for c in prior)
+    swing_hi = max(c.high for c in prior)
+    rng = max(Decimal("0.00000001"), last.high - last.low)
+    lower_wick_pct = (min(last.open, last.close) - last.low) / rng
+    upper_wick_pct = (last.high - max(last.open, last.close)) / rng
+    atr = _atr(c15, 14)
+    dpct = float((footprint or {}).get("delta_pct", 0.0))
+    crowd_state = str((crowd or {}).get("crowd_state", "BALANCED"))
+
+    passed: List[str] = []
+    failed: List[str] = []
+    direction = "LONG"
+    score = 40
+
+    sell_side_sweep = last.low < swing_lo * Decimal("0.999") and last.close > swing_lo and lower_wick_pct >= Decimal("0.40")
+    buy_side_sweep = last.high > swing_hi * Decimal("1.001") and last.close < swing_hi and upper_wick_pct >= Decimal("0.40")
+
+    if sell_side_sweep:
+        direction = "LONG"
+        score += 32
+        passed.append(f"Sell-Side Stop-Hunt Sweep (<${_quant(swing_lo)} & Closed Inside)")
+        if dpct >= 6.0:
+            score += 18
+            passed.append(f"Footprint Buy Absorption ({dpct:+.1f}% Delta)")
+        else:
+            failed.append(f"Weak Buy Delta ({dpct:+.1f}%)")
+        if crowd_state == "CROWDED_SHORTS":
+            score += 8
+            passed.append("Crowded Retail Shorts Trapped")
+    elif buy_side_sweep:
+        direction = "SHORT"
+        score += 32
+        passed.append(f"Buy-Side Stop-Hunt Sweep (>${_quant(swing_hi)} & Closed Inside)")
+        if dpct <= -6.0:
+            score += 18
+            passed.append(f"Footprint Sell Absorption ({dpct:+.1f}% Delta)")
+        else:
+            failed.append(f"Weak Sell Delta ({dpct:+.1f}%)")
+        if crowd_state == "CROWDED_LONGS":
+            score += 8
+            passed.append("Crowded Retail Longs Trapped")
+    else:
+        failed.append("No Active Liquidity Sweep Wick")
+
+    entry = _quant(last.close)
+    risk = max(atr * Decimal("1.8"), entry * Decimal("0.016"))
+    sl = _quant(min(last.low, entry - risk) if direction == "LONG" else max(last.high, entry + risk))
+    target = _quant(entry + risk * Decimal("2.5") if direction == "LONG" else entry - risk * Decimal("2.5"))
+    status = "CONFIRMED" if (score >= 86 and len(failed) == 0) else ("WATCHLIST" if score >= 70 else "REJECTED")
+    return CryptoSignal(
+        symbol=symbol, engine_code="ENGINE_4_SHADOW_SWEEP", horizon_bucket="intraday",
+        hold_horizon="Shadow Sweep Reversal • 2–12 hrs", direction=direction,
+        status=status, score=min(98, score), entry_price=entry, stop_loss=sl, target_price=target,
+        expected_net_rr=Decimal("2.40"), recommended_leverage=Decimal("1.5"),
+        passed_rules=passed, failed_rules=failed,
+        rationale=f"Institutional Stop-Hunt {direction} Sweep on {symbol}: Footprint Delta {dpct:+.1f}%, Crowd {crowd_state}.",
+    )
