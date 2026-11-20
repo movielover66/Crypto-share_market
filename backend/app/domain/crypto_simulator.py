@@ -51,6 +51,7 @@ class CryptoPaperPosition:
     rationale: str = ""
     opened_at_ist: str = ""
     closed_at_ist: Optional[str] = None
+    tg_message_id: Optional[int] = None
 
 
 @dataclass
@@ -178,22 +179,17 @@ class CryptoPaperEngine:
         )
         self.positions[pos.position_id] = pos
 
-        if paper_store and paper_store.is_configured():
-            try:
-                paper_store.insert_position(pos)
-            except Exception:
-                pass
-
         if is_elite and telegram_notifier and getattr(telegram_notifier, "enabled", False):
             self.tg_sent_today += 1
             ts_str = now_ist.strftime("%I:%M %p IST")
+            tg_res = None
             if is_boom and hasattr(telegram_notifier, "send_html"):
                 msg = (
                     f"🟣🚀 <b>BOOM 1x</b> • <code>{pos.symbol}</code>\n"
                     f"Entry <code>${pos.entry_fill_price}</code> | TP <code>${pos.target_price}</code> | SL <code>${pos.stop_loss}</code>\n"
                     f"<i>Score {pos.score}/100 • Margin ${pos.margin_usdt} • Alert #{self.tg_sent_today}/{self.config.telegram_daily_cap} • {ts_str}</i>"
                 )
-                telegram_notifier.send_html(msg, btn_label="🚀 Open Boom Radar")
+                tg_res = telegram_notifier.send_html(msg, btn_label="🚀 Open Boom Radar")
             elif hasattr(telegram_notifier, "send_html"):
                 dot = "🟢" if pos.direction == "LONG" else "🔴"
                 msg = (
@@ -201,9 +197,17 @@ class CryptoPaperEngine:
                     f"Entry <code>${pos.entry_fill_price}</code> | TP <code>${pos.target_price}</code> | SL <code>${pos.stop_loss}</code>\n"
                     f"<i>{pos.horizon_bucket.upper()} • Score {pos.score}/100 • Margin ${pos.margin_usdt} • #{self.tg_sent_today}/{self.config.telegram_daily_cap} • {ts_str}</i>"
                 )
-                telegram_notifier.send_html(msg, btn_label="📊 Open Crypto Desk")
+                tg_res = telegram_notifier.send_html(msg, btn_label="📊 Open Crypto Desk")
             else:
-                telegram_notifier.send_alert(f"{pos.direction} — {pos.symbol}", f"Entry ${pos.entry_fill_price}", ts_str)
+                tg_res = telegram_notifier.send_alert(f"{pos.direction} — {pos.symbol}", f"Entry ${pos.entry_fill_price}", ts_str)
+            if isinstance(tg_res, dict) and tg_res.get("message_id"):
+                pos.tg_message_id = int(tg_res["message_id"])
+
+        if paper_store and paper_store.is_configured():
+            try:
+                paper_store.insert_position(pos)
+            except Exception:
+                pass
         return pos
 
     def close_position(
@@ -291,6 +295,7 @@ class CryptoPaperEngine:
                     caption_html=cap,
                     ts_label=ts_str,
                     btn_label=btn,
+                    reply_to_message_id=pos.tg_message_id,
                 )
             else:
                 telegram_notifier.send_alert(f"{badge} — {pos.symbol}", f"Net {sign}${pos.net_pnl_usdt}", ts_str)
