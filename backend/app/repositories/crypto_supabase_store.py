@@ -41,7 +41,7 @@ class CryptoSupabaseStore:
         if not self.is_configured():
             return []
         try:
-            rows = self._request("GET", "paper_trades?market=eq.CRYPTO&select=*&order=created_at.desc")
+            rows = self._request("GET", "paper_trades?market=eq.CRYPTO_V1&select=*&order=created_at.desc")
             self.last_error = None
             self.last_operation = "fetch"
         except Exception as exc:
@@ -62,7 +62,8 @@ class CryptoSupabaseStore:
                 target = Decimal(str(r.get("target_inr") or "0"))
                 raw_label = str(r.get("hold_label") or "intraday|ENGINE_1_BREAKOUT|LONG|2.0|BACKEND_LAB")
                 parts = raw_label.split("|")
-                horizon_bucket = parts[0] if len(parts) > 0 and parts[0] else "intraday"
+                raw_hb = (parts[0].strip().lower() if len(parts) > 0 and parts[0] else "intraday")
+                horizon_bucket = raw_hb if raw_hb in ("intraday", "reversion", "swing", "boom") else "intraday"
                 engine_code = parts[1] if len(parts) > 1 and parts[1] else "ENGINE_1_BREAKOUT"
                 direction = parts[2] if len(parts) > 2 and parts[2] in ("LONG", "SHORT") else "LONG"
                 lev = Decimal(parts[3]) if len(parts) > 3 else Decimal("2.0")
@@ -110,7 +111,7 @@ class CryptoSupabaseStore:
         row = {
             "id": pos.position_id,
             "symbol": pos.symbol,
-            "market": "CRYPTO",
+            "market": "CRYPTO_V1",
             "budget_inr": float(pos.margin_usdt),
             "buy_price_inr": float(pos.entry_fill_price),
             "target_inr": float(pos.target_price),
@@ -163,7 +164,7 @@ class CryptoSupabaseStore:
     def status_summary(self) -> Dict[str, Any]:
         return {
             "configured": self.is_configured(),
-            "table": "paper_trades (market=CRYPTO)",
+            "table": "paper_trades (market=CRYPTO_V1)",
             "last_operation": self.last_operation,
             "last_error": self.last_error,
         }
