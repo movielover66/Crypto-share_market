@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TRADEIQ Crypto Pro v1.0 — 24/7 USDT-M &amp; Spot Vault</title>
+  <title>TRADEIQ Crypto Pro v1.0 — 24/7 INR Desk &amp; Spot Vault</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -23,7 +23,7 @@
     <div class="card w-full max-w-sm p-6 space-y-4">
       <div>
         <div class="text-xl font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs px-2 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700]">CRYPTO PRO</span></div>
-        <p class="text-xs text-slate-400 mt-1">Owner Password Required • 534+ Live Coins • Spot Vault</p>
+        <p class="text-xs text-slate-400 mt-1">Owner Password Required • Full INR View • Spot Vault</p>
       </div>
       <div id="login-err" class="hidden text-xs text-[#FF3B5C] bg-[#FF3B5C]/10 border border-[#FF3B5C]/30 rounded-xl px-3 py-2"></div>
       <input id="login-pwd" type="password" placeholder="Enter Owner Password" class="w-full px-3.5 py-2.5 rounded-xl bg-[#090D16] border border-[#24324A] text-white text-sm focus:outline-none focus:border-[#00E676]" />
@@ -31,7 +31,7 @@
     </div>
   </div>
 
-  <!-- Authenticated App View (Hidden until Owner JWT verified) -->
+  <!-- Authenticated App View -->
   <div id="app-view" hidden class="min-h-screen flex flex-col">
     <header class="sticky top-0 z-30 bg-[#05070B]/95 backdrop-blur-md border-b border-[#1E293B]">
       <div class="max-w-5xl mx-auto px-3 sm:px-5 h-14 flex items-center justify-between gap-2">
@@ -42,11 +42,12 @@
               <span class="text-base sm:text-lg font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span></span>
               <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700] border border-[#F5B700]/35">PRO</span>
             </div>
-            <p id="sec-label" class="text-[11px] text-slate-400 truncate leading-none mt-0.5">Crypto Trading Desk • 534+ Coins</p>
+            <p id="sec-label" class="text-[11px] text-slate-400 truncate leading-none mt-0.5">Crypto INR Desk • 534+ Coins</p>
           </div>
         </div>
-        <div class="flex items-center gap-2 shrink-0">
-          <div class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B]">
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="curr-btn" onclick="toggleCurrency()" class="px-2.5 py-1.5 rounded-xl bg-[#0E131F] border border-[#F5B700]/45 text-xs font-extrabold text-[#F5B700] mono">₹ INR</button>
+          <div class="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B]">
             <span id="ws-dot" class="w-2 h-2 rounded-full bg-[#00E676]"></span>
             <span id="ws-txt" class="text-xs font-bold text-[#00E676] mono">24/7 LIVE</span>
           </div>
@@ -83,6 +84,7 @@
   <script>
     const TOKEN_KEY = 'tradeiq.crypto.session';
     let authToken = sessionStorage.getItem(TOKEN_KEY) || null;
+    let currMode = localStorage.getItem('tradeiq.crypto.curr') || 'INR'; // Default FULL INR!
     let section = 'desk';
     let horizon = 'intraday';
     let labFilter = 'ALL';
@@ -110,6 +112,69 @@
     let chartStreamActive = false;
     let ws = null;
 
+    function inrRate() {
+      return Number(overview?.usdt_inr || spotData?.usdt_inr || 85.20) || 85.20;
+    }
+
+    // Format money amounts (Equity, P&L, Budget, Margin) in INR (default) or USD
+    function fmtAmt(usdVal, signed = false) {
+      const u = Number(usdVal || 0);
+      const sign = signed ? (u > 0 ? '+' : (u < 0 ? '-' : '')) : (u < 0 ? '-' : '');
+      if (currMode === 'INR') {
+        const r = Math.abs(u * inrRate());
+        return sign + '₹' + r.toLocaleString('en-IN', { minimumFractionDigits: r < 100 ? 2 : 0, maximumFractionDigits: r < 100 ? 2 : 0 });
+      }
+      return sign + '$' + Math.abs(u).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // Secondary subtle reference line ($ when in INR mode, ₹ when in USD mode)
+    function fmtAlt(usdVal, signed = false) {
+      const u = Number(usdVal || 0);
+      const sign = signed ? (u > 0 ? '+' : (u < 0 ? '-' : '')) : (u < 0 ? '-' : '');
+      if (currMode === 'INR') {
+        return sign + '$' + Math.abs(u).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return sign + '₹' + Math.abs(u * inrRate()).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+    }
+
+    // Format coin prices (BTC ₹54,88,210 or PEPE ₹0.00124) cleanly in INR (default) or USD
+    function fmtPx(usdPx) {
+      const u = Number(usdPx || 0);
+      if (!Number.isFinite(u) || u === 0) return currMode === 'INR' ? '₹0' : '$0';
+      if (currMode === 'INR') {
+        const r = u * inrRate();
+        if (r >= 1000) return '₹' + r.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+        if (r >= 10) return '₹' + r.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        if (r >= 0.1) return '₹' + r.toFixed(3);
+        return '₹' + r.toFixed(5);
+      }
+      if (u >= 100) return '$' + u.toLocaleString('en-US', { maximumFractionDigits: 2 });
+      if (u >= 1) return '$' + u.toFixed(3);
+      return '$' + u.toFixed(5);
+    }
+
+    function fmtVol(v) {
+      const n = Number(v || 0);
+      if (currMode === 'INR') {
+        const cr = (n * inrRate()) / 1e7;
+        if (cr >= 100) return '₹' + cr.toFixed(0) + ' Cr';
+        return '₹' + cr.toFixed(1) + ' Cr';
+      }
+      if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
+      return '$' + n.toFixed(0);
+    }
+
+    window.toggleCurrency = () => {
+      currMode = currMode === 'INR' ? 'USD' : 'INR';
+      localStorage.setItem('tradeiq.crypto.curr', currMode);
+      const b = document.getElementById('curr-btn');
+      if (b) b.textContent = currMode === 'INR' ? '₹ INR' : '$ USD';
+      showToast(`Display switched to ${currMode === 'INR' ? '₹ Indian Rupee (INR)' : '$ US Dollar (USD)'}`);
+      render();
+      if (section === 'chart') loadChart(true);
+    };
+
     function closeExchangeChartSockets() {
       chartStreamActive = false;
       if (okxPingTimer) { clearInterval(okxPingTimer); okxPingTimer = null; }
@@ -125,6 +190,7 @@
       chartStreamActive = true;
       const instId = sym.endsWith('USDT') ? sym.slice(0, -4) + '-USDT-SWAP' : sym;
       const okxBar = { '1m':'candle1m', '5m':'candle5m', '15m':'candle15m', '1h':'candle1H', '4h':'candle4H', '1d':'candle1D' }[tf] || 'candle1m';
+      const mult = currMode === 'INR' ? inrRate() : 1;
       liveFpBuy = 0;
       liveFpSell = 0;
 
@@ -160,24 +226,25 @@
             if (!d) return;
 
             if (ch === 'tickers') {
-              const px = Number(d.last);
-              const op24 = Number(d.open24h || px);
-              const pct = op24 > 0 ? (((px - op24) / op24) * 100) : 0;
+              const pxUsd = Number(d.last);
+              const pxDisp = pxUsd * mult;
+              const op24 = Number(d.open24h || pxUsd);
+              const pct = op24 > 0 ? (((pxUsd - op24) / op24) * 100) : 0;
               const ltpEl = document.getElementById('ch-ltp');
               const chgEl = document.getElementById('ch-chg');
               if (ltpEl) {
-                ltpEl.textContent = '$' + d.last;
-                ltpEl.style.color = px >= lastLivePx ? '#00E676' : '#FF3B5C';
-                lastLivePx = px;
+                ltpEl.textContent = fmtPx(pxUsd);
+                ltpEl.style.color = pxUsd >= lastLivePx ? '#00E676' : '#FF3B5C';
+                lastLivePx = pxUsd;
               }
               if (chgEl) {
                 chgEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
                 chgEl.style.color = pct >= 0 ? '#00E676' : '#FF3B5C';
               }
-              if (candleSeriesRef && lastBarRef && Number.isFinite(px) && px > 0) {
-                lastBarRef.close = px;
-                if (px > lastBarRef.high) lastBarRef.high = px;
-                if (px < lastBarRef.low) lastBarRef.low = px;
+              if (candleSeriesRef && lastBarRef && Number.isFinite(pxDisp) && pxDisp > 0) {
+                lastBarRef.close = pxDisp;
+                if (pxDisp > lastBarRef.high) lastBarRef.high = pxDisp;
+                if (pxDisp < lastBarRef.low) lastBarRef.low = pxDisp;
                 candleSeriesRef.update(lastBarRef);
               }
             } else if (ch === 'books5') {
@@ -189,10 +256,10 @@
               const pres = Number(bp) >= 58 ? 'BUY_IMBALANCE' : (Number(bp) <= 42 ? 'SELL_IMBALANCE' : 'BALANCED');
               const obBox = document.getElementById('ob-box');
               if (obBox) {
-                obBox.innerHTML = `<div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">Live Millisecond 5-Level L2 Orderbook</span><span class="text-xs font-bold ${Number(bp)>=50?'text-[#00E676]':'text-[#FF3B5C]'}">${pres} (${bp}% Buy)</span></div>
+                obBox.innerHTML = `<div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">Live Millisecond 5-Level Orderbook (${currMode})</span><span class="text-xs font-bold ${Number(bp)>=50?'text-[#00E676]':'text-[#FF3B5C]'}">${pres} (${bp}% Buy)</span></div>
                   <div class="grid grid-cols-2 gap-3 text-xs mono">
-                    <div class="space-y-1">${bids.slice(0,5).map(b => `<div class="flex justify-between px-2 py-1 rounded bg-[#00E676]/10"><span class="text-[#00E676]">$${b[0]}</span><span>${b[1]}</span></div>`).join('')}</div>
-                    <div class="space-y-1">${asks.slice(0,5).map(a => `<div class="flex justify-between px-2 py-1 rounded bg-[#FF3B5C]/10"><span class="text-[#FF3B5C]">$${a[0]}</span><span>${a[1]}</span></div>`).join('')}</div>
+                    <div class="space-y-1">${bids.slice(0,5).map(b => `<div class="flex justify-between px-2 py-1 rounded bg-[#00E676]/10"><span class="text-[#00E676]">${fmtPx(b[0])}</span><span>${b[1]}</span></div>`).join('')}</div>
+                    <div class="space-y-1">${asks.slice(0,5).map(a => `<div class="flex justify-between px-2 py-1 rounded bg-[#FF3B5C]/10"><span class="text-[#FF3B5C]">${fmtPx(a[0])}</span><span>${a[1]}</span></div>`).join('')}</div>
                   </div>`;
               }
             } else if (ch === 'trades') {
@@ -223,10 +290,7 @@
       try {
         okxCandleWs = new WebSocket('wss://ws.okx.com:8443/ws/v5/business');
         okxCandleWs.onopen = () => {
-          okxCandleWs.send(JSON.stringify({
-            op: 'subscribe',
-            args: [{ channel: okxBar, instId }]
-          }));
+          okxCandleWs.send(JSON.stringify({ op: 'subscribe', args: [{ channel: okxBar, instId }] }));
         };
         okxCandleWs.onclose = scheduleReconnect;
         okxCandleWs.onerror = () => { try { okxCandleWs.close(); } catch {} };
@@ -237,7 +301,7 @@
             const row = msg?.data?.[0];
             if (!row || !candleSeriesRef || !volSeriesRef) return;
             const ts = Math.floor(Number(row[0]) / 1000);
-            const o = Number(row[1]), h = Number(row[2]), l = Number(row[3]), cl = Number(row[4]), v = Number(row[5]);
+            const o = Number(row[1]) * mult, h = Number(row[2]) * mult, l = Number(row[3]) * mult, cl = Number(row[4]) * mult, v = Number(row[5]);
             lastBarRef = { time: ts, open: o, high: h, low: l, close: cl };
             candleSeriesRef.update(lastBarRef);
             volSeriesRef.update({ time: ts, value: v, color: cl >= o ? 'rgba(0,230,118,0.32)' : 'rgba(255,59,92,0.32)' });
@@ -289,22 +353,20 @@
       bootApp();
     });
 
-    function fmtU(n) { const v = Number(n || 0); return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
-    function fmtR(n) { const v = Number(n || 0); return (v < 0 ? '-' : '') + '₹' + Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
-    function fmtVol(v) { const n = Number(v || 0); if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B'; if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M'; return '$' + n.toFixed(0); }
-
     function renderMajors() {
       const bar = document.getElementById('majors-bar');
       const majors = overview?.majors || [];
       const inr = overview?.usdt_inr || '85.20';
+      const b = document.getElementById('curr-btn');
+      if (b) b.textContent = currMode === 'INR' ? '₹ INR' : '$ USD';
       bar.innerHTML = majors.map(m => {
         const up = Number(m.change_24h_pct) >= 0;
         return `<button onclick="openChart('${m.symbol}')" class="shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B]">
           <span class="text-[11px] font-bold text-slate-300">${m.symbol.replace('USDT','')}</span>
-          <span class="text-xs font-bold text-white mono">$${m.ltp}</span>
+          <span class="text-xs font-bold text-white mono">${fmtPx(m.ltp)}</span>
           <span class="text-[11px] font-bold mono px-1.5 py-0.5 rounded ${up ? 'text-[#00E676] bg-[#00E676]/10' : 'text-[#FF3B5C] bg-[#FF3B5C]/10'}">${up ? '+' : ''}${m.change_24h_pct}%</span>
         </button>`;
-      }).join('') + `<div class="shrink-0 px-2.5 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B] text-[11px]"><span class="text-slate-400">USDT/INR </span><strong class="text-[#F5B700] mono">₹${inr}</strong></div>`;
+      }).join('') + `<div class="shrink-0 px-2.5 py-1.5 rounded-xl bg-[#0E131F] border border-[#1E293B] text-[11px]"><span class="text-slate-400">1 USDT = </span><strong class="text-[#F5B700] mono">₹${inr}</strong></div>`;
     }
 
     function renderNav() {
@@ -316,7 +378,7 @@
         { id: 'boom', icon: '🚀', t: 'Daily Boom Radar', s: 'Dynamic 534-Coin Explosive Movers' },
         { id: 'catalyst', icon: '🌍', t: 'Macro & Catalyst Radar', s: 'Musk • Trump • Fed • SEC News' },
         { id: 'lab', icon: '🧪', t: 'Accuracy Lab vs Elite TG', s: `Top ${overview?.tg_daily_cap || 6}/day TG vs All Lab` },
-        { id: 'portfolio', icon: '💼', t: 'Portfolio & Supabase', s: 'Settings & Permanent Ledger' },
+        { id: 'portfolio', icon: '💼', t: 'Portfolio & Supabase', s: 'INR Settings & Permanent Ledger' },
         { id: 'system', icon: '⚙️', t: 'System & Exchange Feeds', s: overview?.active_exchange || 'OKX v5 Primary' }
       ];
       document.getElementById('drawer-nav').innerHTML = items.map(i => `
@@ -335,9 +397,7 @@
       if (s === 'catalyst') { const r = await apiFetch('/api/v1/crypto/catalysts'); catalystData = r.items || []; }
       if (s === 'system') { connData = await apiFetch('/api/v1/system/connectivity'); }
       render();
-      if (s === 'chart') {
-        await loadChart(true);
-      }
+      if (s === 'chart') await loadChart(true);
     };
 
     window.loadMarkets = async () => {
@@ -351,6 +411,7 @@
     window.openChart = (sym) => { chartSym = sym.toUpperCase().endsWith('USDT') ? sym.toUpperCase() : (sym.toUpperCase() + 'USDT'); goSec('chart'); };
     window.setTf = (tf) => { chartTf = tf; loadChart(true); };
 
+    // ── Spot Vault Actions (Inputs accept ₹ INR directly in INR mode!) ─────────
     window.scanSpotVault = async () => {
       showToast('Scanning Top 10 Blue-Chips (4-Point Bounce Check)...');
       const r = await apiFetch('/api/v1/spot/scan', { method: 'POST', body: JSON.stringify({ execute_entries: true }) });
@@ -359,10 +420,12 @@
       render();
     };
     window.saveSpotCfg = async () => {
+      const rawBudget = Number(document.getElementById('sp-budget').value);
+      const budgetUsdt = currMode === 'INR' ? Number((rawBudget / inrRate()).toFixed(2)) : rawBudget;
       await apiFetch('/api/v1/spot/config', {
         method: 'PUT',
         body: JSON.stringify({
-          per_coin_budget_usdt: Number(document.getElementById('sp-budget').value),
+          per_coin_budget_usdt: budgetUsdt,
           target_net_pct: Number(document.getElementById('sp-tgt').value),
           max_active_coins: Number(document.getElementById('sp-max').value),
           enabled: document.getElementById('sp-auto').value === 'true'
@@ -375,15 +438,16 @@
     window.quickSpotBuy = async (symOverride) => {
       const sym = symOverride || (document.getElementById('sp-buy-sym')?.value || '').trim().toUpperCase();
       if (!sym) { showToast('Enter a coin symbol (e.g. BTC, ETH, SOL)'); return; }
-      const budget = Number(document.getElementById('sp-buy-amt')?.value || spotData?.config?.per_coin_budget_usdt || 120);
+      const rawAmt = Number(document.getElementById('sp-buy-amt')?.value || 0);
+      const budgetUsdt = rawAmt > 0 ? (currMode === 'INR' ? Number((rawAmt / inrRate()).toFixed(2)) : rawAmt) : Number(spotData?.config?.per_coin_budget_usdt || 120);
       const tgt = Number(document.getElementById('sp-buy-tgt')?.value || spotData?.config?.target_net_pct || 5.0);
       const single = (document.getElementById('sp-buy-mode')?.value === 'single');
       const r = await apiFetch('/api/v1/spot/buy', {
         method: 'POST',
-        body: JSON.stringify({ symbol: sym, budget_usdt: budget, target_net_pct: tgt, single_shot: single })
+        body: JSON.stringify({ symbol: sym, budget_usdt: budgetUsdt, target_net_pct: tgt, single_shot: single })
       });
       if (r.opened) {
-        showToast(`🪙 Spot Bought ${r.symbol} @ $${r.avg_entry_price} (Target $${r.net_target_price})`);
+        showToast(`🪙 Spot Bought ${r.symbol} @ ${fmtPx(r.avg_entry_price)} (Target ${fmtPx(r.net_target_price)})`);
         spotData = await apiFetch('/api/v1/spot/overview');
         render();
       } else {
@@ -392,13 +456,13 @@
     };
     window.addSpotDca = async (pid) => {
       const r = await apiFetch('/api/v1/spot/positions/' + encodeURIComponent(pid) + '/dca', { method: 'POST', body: '{}' });
-      showToast(r.updated ? `DCA #${r.tranches_filled} filled • Avg $${r.avg_entry_price}` : (r.detail || 'DCA unavailable'));
+      showToast(r.updated ? `DCA #${r.tranches_filled} filled • Avg ${fmtPx(r.avg_entry_price)}` : (r.detail || 'DCA unavailable'));
       spotData = await apiFetch('/api/v1/spot/overview');
       render();
     };
     window.sellSpotPos = async (pid) => {
       const r = await apiFetch('/api/v1/spot/positions/' + encodeURIComponent(pid) + '/sell', { method: 'POST', body: '{}' });
-      showToast(`Spot Sold • Net P&L: ${fmtU(r.net_pnl_usdt)}`);
+      showToast(`Spot Sold • Net P&L: ${fmtAmt(r.net_pnl_usdt, true)}`);
       spotData = await apiFetch('/api/v1/spot/overview');
       await refreshCore();
     };
@@ -420,11 +484,15 @@
       await refreshCore();
     };
     window.saveCfg = async () => {
+      const rawStart = Number(document.getElementById('c-start').value);
+      const rawPer = Number(document.getElementById('c-per').value);
+      const startUsdt = currMode === 'INR' ? Number((rawStart / inrRate()).toFixed(2)) : rawStart;
+      const perUsdt = currMode === 'INR' ? Number((rawPer / inrRate()).toFixed(2)) : rawPer;
       await apiFetch('/api/v1/crypto/config', {
         method: 'PUT',
         body: JSON.stringify({
-          starting_usdt: Number(document.getElementById('c-start').value),
-          per_trade_usdt: Number(document.getElementById('c-per').value),
+          starting_usdt: startUsdt,
+          per_trade_usdt: perUsdt,
           max_leverage: Number(document.getElementById('c-lev').value),
           telegram_daily_cap: Number(document.getElementById('c-tg').value)
         })
@@ -440,6 +508,7 @@
       const c = r.candles || [];
       const up24 = Number(r.change_24h_pct || 0) >= 0;
       const dpct = Number(fp.delta_pct || 0);
+      const mult = currMode === 'INR' ? inrRate() : 1;
 
       if (rebuildLayout || !document.getElementById('tv-candle-box')) {
         document.getElementById('content').innerHTML = `
@@ -448,24 +517,22 @@
               <div>
                 <div class="flex items-center gap-2">
                   <span class="text-lg font-extrabold text-white">${r.symbol}</span>
-                  <span id="ch-ltp" class="text-base font-extrabold mono ${up24?'text-[#00E676]':'text-[#FF3B5C]'}">$${r.ltp}</span>
+                  <span id="ch-ltp" class="text-base font-extrabold mono ${up24?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtPx(r.ltp)}</span>
                   <span id="ch-chg" class="text-xs font-bold mono px-1.5 py-0.5 rounded ${up24?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${up24?'+':''}${r.change_24h_pct}%</span>
                 </div>
-                <div class="text-[11px] text-slate-400">TradingView Live Candlesticks • Direct OKX Millisecond Stream ⚡</div>
+                <div class="text-[11px] text-slate-400">TradingView Live Candlesticks (${currMode}) • Direct OKX Millisecond Stream ⚡</div>
               </div>
               <div class="flex items-center gap-1.5">
                 <input id="chart-sym-inp" placeholder="Search any coin (e.g. SUI)" class="w-36 sm:w-44 px-2.5 py-1.5 rounded-xl bg-[#090D16] border border-[#24324A] text-xs text-white uppercase" />
                 <button onclick="const v=document.getElementById('chart-sym-inp').value.trim(); if(v) openChart(v);" class="px-3 py-1.5 rounded-xl bg-[#00D4FF] text-[#04120B] font-bold text-xs">Go</button>
               </div>
             </div>
-
             <div class="flex items-center justify-between flex-wrap gap-2">
               <div class="flex gap-1.5 flex-wrap">
                 ${['1m','5m','15m','1h','4h','1d'].map(tf => `<button onclick="setTf('${tf}')" class="px-2.5 py-1 rounded-lg text-xs font-bold border ${chartTf===tf?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${tf}</button>`).join('')}
               </div>
               <button onclick="goSec('markets')" class="text-xs font-bold text-[#00D4FF]">Browse All 534+ Coins →</button>
             </div>
-
             <div id="tv-candle-box" class="w-full h-80 rounded-xl overflow-hidden border border-[#1B2436] bg-[#070B12]"></div>
           </div>
           <div id="fp-box" class="card p-4"></div>
@@ -473,7 +540,7 @@
         `;
       } else {
         const ltpEl = document.getElementById('ch-ltp');
-        if (ltpEl) ltpEl.textContent = '$' + r.ltp;
+        if (ltpEl) ltpEl.textContent = fmtPx(r.ltp);
       }
 
       const box = document.getElementById('tv-candle-box');
@@ -488,8 +555,8 @@
           width: box.clientWidth,
           height: 320,
         });
-        const samplePx = Number(c[c.length - 1].c);
-        const precision = samplePx < 0.01 ? 7 : samplePx < 1 ? 5 : samplePx < 10 ? 4 : 2;
+        const samplePx = Number(c[c.length - 1].c) * mult;
+        const precision = samplePx < 0.01 ? 6 : samplePx < 1 ? 4 : samplePx < 100 ? 2 : 0;
         const candleSeries = tvChart.addCandlestickSeries({
           upColor: '#00E676', downColor: '#FF3B5C', borderVisible: false,
           wickUpColor: '#00E676', wickDownColor: '#FF3B5C',
@@ -505,7 +572,7 @@
           const ts = Math.floor(Number(x.ts_ms) / 1000);
           if (seenTs.has(ts)) continue;
           seenTs.add(ts);
-          const o = Number(x.o), h = Number(x.h), l = Number(x.l), cl = Number(x.c), v = Number(x.v);
+          const o = Number(x.o) * mult, h = Number(x.h) * mult, l = Number(x.l) * mult, cl = Number(x.c) * mult, v = Number(x.v);
           cData.push({ time: ts, open: o, high: h, low: l, close: cl });
           vData.push({ time: ts, value: v, color: cl >= o ? 'rgba(0,230,118,0.28)' : 'rgba(255,59,92,0.28)' });
         }
@@ -531,10 +598,10 @@
       const obBox = document.getElementById('ob-box');
       if (obBox) {
         obBox.innerHTML = `
-          <div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">Live 5-Level L2 Orderbook Depth</span><span class="text-xs font-bold text-[#00E676]">${d.pressure || 'LIVE'} (${d.buy_pct || 50}% Buy)</span></div>
+          <div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">Live 5-Level L2 Orderbook (${currMode})</span><span class="text-xs font-bold text-[#00E676]">${d.pressure || 'LIVE'} (${d.buy_pct || 50}% Buy)</span></div>
           <div class="grid grid-cols-2 gap-3 text-xs mono">
-            <div class="space-y-1">${(d.bids||[]).map(b => `<div class="flex justify-between px-2 py-1 rounded bg-[#00E676]/10"><span class="text-[#00E676]">$${b.price}</span><span>${b.qty}</span></div>`).join('')}</div>
-            <div class="space-y-1">${(d.asks||[]).map(a => `<div class="flex justify-between px-2 py-1 rounded bg-[#FF3B5C]/10"><span class="text-[#FF3B5C]">$${a.price}</span><span>${a.qty}</span></div>`).join('')}</div>
+            <div class="space-y-1">${(d.bids||[]).map(b => `<div class="flex justify-between px-2 py-1 rounded bg-[#00E676]/10"><span class="text-[#00E676]">${fmtPx(b.price)}</span><span>${b.qty}</span></div>`).join('')}</div>
+            <div class="space-y-1">${(d.asks||[]).map(a => `<div class="flex justify-between px-2 py-1 rounded bg-[#FF3B5C]/10"><span class="text-[#FF3B5C]">${fmtPx(a.price)}</span><span>${a.qty}</span></div>`).join('')}</div>
           </div>`;
       }
     }
@@ -547,6 +614,7 @@
       const closed = led.closed_trades || [];
       const spSum = overview?.spot_summary || { open_count: 0, realised_net_usdt: '0.00', target_net_pct: '5.0' };
       const el = document.getElementById('content');
+      const curSym = currMode === 'INR' ? '₹' : '$';
 
       if (section === 'desk') {
         const netU = Number(led.total_net_usdt || 0);
@@ -555,8 +623,8 @@
         const list = byH(horizon);
         el.innerHTML = `
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
-            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Equity (USDT)</div><div class="text-lg font-extrabold text-white mono mt-1">${fmtU(led.total_equity_usdt || 1000)}</div><div class="text-[10px] text-[#F5B700] mono">≈ ${fmtR(led.total_equity_inr || 85200)}</div></div>
-            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Net P&L</div><div class="text-lg font-extrabold mono mt-1 ${netU>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${netU>=0?'+':''}${fmtU(netU)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtR(led.total_net_inr || 0)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Equity (${currMode})</div><div class="text-lg font-extrabold text-white mono mt-1">${fmtAmt(led.total_equity_usdt || 1000)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtAlt(led.total_equity_usdt || 1000)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Net P&L (${currMode})</div><div class="text-lg font-extrabold mono mt-1 ${netU>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(netU, true)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtAlt(netU, true)}</div></div>
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Telegram Elite Today</div><div class="text-lg font-extrabold text-[#F5B700] mono mt-1">${overview?.tg_sent_today || 0} / ${overview?.tg_daily_cap || 6}</div><div class="text-[10px] text-slate-400">A+ Trades Sent</div></div>
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Backend Lab Accuracy</div><div class="text-lg font-extrabold text-[#00E676] mono mt-1">${led.accuracy_pct || '0.0'}%</div><div class="text-[10px] text-slate-400">${led.wins||0}W/${led.losses||0}L • ${openPos.length} Open</div></div>
           </div>
@@ -578,14 +646,14 @@
             ${list.length === 0 ? `<div class="card p-5 text-center text-xs text-slate-400 md:col-span-2">No open ${horizon} positions right now. 24/7 scanner dynamically screens all 534+ OKX coins every 5 min.</div>` : list.map(p => {
               const nu = Number(p.unrealised_net_usdt || 0);
               return `<div class="card p-4">
-                <div class="flex justify-between"><div><span class="text-base font-extrabold text-white">${p.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">${p.direction} ${p.leverage}x</span><div class="text-[11px] text-slate-400">${p.engine_code}</div></div>
-                <div class="text-right mono"><div class="text-base font-extrabold ${nu>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${nu>=0?'+':''}${fmtU(nu)}</div><div class="text-[10px] text-slate-400">≈ ${fmtR(p.unrealised_net_inr)}</div></div></div>
+                <div class="flex justify-between"><div><span class="text-base font-extrabold text-white">${p.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">${p.direction} ${p.leverage}x</span><div class="text-[11px] text-slate-400">${p.engine_code} • Margin ${fmtAmt(p.margin_usdt)}</div></div>
+                <div class="text-right mono"><div class="text-base font-extrabold ${nu>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(nu, true)}</div><div class="text-[10px] text-slate-400">≈ ${fmtAlt(nu, true)}</div></div></div>
                 <div class="mt-2 flex gap-1.5 flex-wrap"><span class="text-[10px] px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] font-semibold">⏱ ${p.hold_horizon}</span><span class="text-[10px] px-2 py-0.5 rounded ${p.tier==='ELITE_TG'?'bg-[#F5B700]/15 text-[#F5B700]':'bg-slate-800 text-slate-300'} font-bold">${p.tier==='ELITE_TG'?'⭐ ELITE TG':'🧪 BACKEND LAB'}</span></div>
                 <div class="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-[#1E293B] text-center text-xs mono">
-                  <div><div class="text-[10px] text-slate-500">Entry</div>$${p.entry_fill_price}</div>
-                  <div><div class="text-[10px] text-slate-500">LTP</div>$${p.current_ltp}</div>
-                  <div><div class="text-[10px] text-slate-500">SL</div><span class="text-[#FF3B5C]">$${p.stop_loss}</span></div>
-                  <div><div class="text-[10px] text-slate-500">Target</div><span class="text-[#00E676]">$${p.target_price}</span></div>
+                  <div><div class="text-[10px] text-slate-500">Entry</div>${fmtPx(p.entry_fill_price)}</div>
+                  <div><div class="text-[10px] text-slate-500">LTP</div>${fmtPx(p.current_ltp)}</div>
+                  <div><div class="text-[10px] text-slate-500">SL</div><span class="text-[#FF3B5C]">${fmtPx(p.stop_loss)}</span></div>
+                  <div><div class="text-[10px] text-slate-500">Target</div><span class="text-[#00E676]">${fmtPx(p.target_price)}</span></div>
                 </div>
                 <div class="mt-3 flex gap-2"><button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] text-xs font-bold text-white">🕯️ Live Chart</button><button onclick="closePos('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#FF3B5C]/15 text-[#FF3B5C] text-xs font-bold">Exit</button></div>
               </div>`;
@@ -598,27 +666,28 @@
         const sClosed = sl.closed_trades || [];
         const radar = spotData?.radar || [];
         const realU = Number(sl.realised_net_usdt || 0);
+        const defBudgetDisp = currMode === 'INR' ? Math.round(Number(scfg.per_coin_budget_usdt || 120) * inrRate()) : Number(scfg.per_coin_budget_usdt || 120);
         el.innerHTML = `
           <div class="card p-4 border-[#00E676]/40 flex flex-wrap justify-between items-center gap-2">
             <div>
-              <h2 class="text-base font-extrabold text-white">🪙 Institutional Spot Buy Vault (Zero Stop-Loss • 3-Step Smart DCA)</h2>
-              <p class="text-xs text-slate-400 mt-0.5">Separate CRYPTO_SPOT wallet in Supabase • 4-Point Bounce Check on Top 10 Blue-Chips • Exact 0.20% Spot fee adjusted</p>
+              <h2 class="text-base font-extrabold text-white">🪙 Institutional Spot Buy Vault (${currMode} • Zero Stop-Loss)</h2>
+              <p class="text-xs text-slate-400 mt-0.5">Separate CRYPTO_SPOT wallet • 3-Step Smart DCA (40/30/30) • 4-Point Bounce Check on Top 10 Blue-Chips</p>
             </div>
             <button onclick="scanSpotVault()" class="px-3.5 py-2 rounded-xl bg-[#00E676] text-[#04120B] font-extrabold text-xs">Scan Blue-Chips</button>
           </div>
 
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
-            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Spot Vault Equity</div><div class="text-lg font-extrabold text-white mono mt-1">${fmtU(sl.total_equity_usdt || 1000)}</div><div class="text-[10px] text-[#F5B700] mono">≈ ${fmtR(sl.total_equity_inr || 85200)}</div></div>
-            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Deployed / Free</div><div class="text-lg font-extrabold text-[#00D4FF] mono mt-1">${fmtU(sl.deployed_usdt || 0)}</div><div class="text-[10px] text-slate-400 mono">Free: ${fmtU(sl.free_usdt || 1000)}</div></div>
-            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Realised Spot Profit</div><div class="text-lg font-extrabold mono mt-1 ${realU>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${realU>=0?'+':''}${fmtU(realU)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtR(sl.realised_net_inr || 0)} (${sl.wins||0} Wins)</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Spot Vault Equity</div><div class="text-lg font-extrabold text-white mono mt-1">${fmtAmt(sl.total_equity_usdt || 1000)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtAlt(sl.total_equity_usdt || 1000)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Invested / Free</div><div class="text-lg font-extrabold text-[#00D4FF] mono mt-1">${fmtAmt(sl.deployed_usdt || 0)}</div><div class="text-[10px] text-slate-400 mono">Free: ${fmtAmt(sl.free_usdt || 1000)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Realised Spot Profit</div><div class="text-lg font-extrabold mono mt-1 ${realU>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(realU, true)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtAlt(realU, true)} (${sl.wins||0} Wins)</div></div>
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Net Target • Risk</div><div class="text-lg font-extrabold text-[#00E676] mono mt-1">+${scfg.target_net_pct || '5.0'}%</div><div class="text-[10px] text-slate-400">SL: NONE • 40/30/30 DCA</div></div>
           </div>
 
           <div class="card p-4">
-            <div class="text-sm font-extrabold text-white mb-2">⚡ Quick Manual Spot Buy (Any Coin • Zero Stop-Loss)</div>
+            <div class="text-sm font-extrabold text-white mb-2">⚡ Quick Manual Spot Buy (Amount in ${currMode} • Zero Stop-Loss)</div>
             <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
               <input id="sp-buy-sym" placeholder="Coin (BTC, ETH, SOL)" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white uppercase mono" />
-              <input id="sp-buy-amt" type="number" value="${scfg.per_coin_budget_usdt || 120}" placeholder="Budget USDT" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono" />
+              <input id="sp-buy-amt" type="number" value="${defBudgetDisp}" placeholder="Budget (${curSym})" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono" />
               <input id="sp-buy-tgt" type="number" step="0.5" value="${scfg.target_net_pct || 5.0}" placeholder="Target %" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono" />
               <select id="sp-buy-mode" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white">
                 <option value="dca">3-Step DCA (40/30/30)</option>
@@ -637,18 +706,18 @@
                   <div>
                     <span class="text-base font-extrabold text-white">${p.symbol}</span>
                     <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">DCA ${p.tranches_filled}/${p.max_tranches}</span>
-                    <div class="text-[11px] text-slate-400">Invested ${fmtU(p.total_invested_usdt)} (≈ ${fmtR(p.total_invested_inr)}) of $${p.budget_usdt}</div>
+                    <div class="text-[11px] text-slate-400">Invested ${fmtAmt(p.total_invested_usdt)} of ${fmtAmt(p.budget_usdt)}</div>
                   </div>
                   <div class="text-right mono">
-                    <div class="text-base font-extrabold ${un>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${un>=0?'+':''}${fmtU(un)} (${Number(p.unrealised_net_pct)>=0?'+':''}${p.unrealised_net_pct}%)</div>
-                    <div class="text-[10px] text-slate-400">≈ ${fmtR(p.unrealised_net_inr)}</div>
+                    <div class="text-base font-extrabold ${un>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(un, true)} (${Number(p.unrealised_net_pct)>=0?'+':''}${p.unrealised_net_pct}%)</div>
+                    <div class="text-[10px] text-slate-400">≈ ${fmtAlt(un, true)}</div>
                   </div>
                 </div>
                 <div class="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-[#1E293B] text-center text-xs mono">
-                  <div><div class="text-[10px] text-slate-500">Avg Buy</div>$${p.avg_entry_price}</div>
-                  <div><div class="text-[10px] text-slate-500">Live LTP</div>$${p.current_ltp}</div>
+                  <div><div class="text-[10px] text-slate-500">Avg Buy</div>${fmtPx(p.avg_entry_price)}</div>
+                  <div><div class="text-[10px] text-slate-500">Live LTP</div>${fmtPx(p.current_ltp)}</div>
                   <div><div class="text-[10px] text-slate-500">Stop-Loss</div><span class="text-[#00D4FF]">NONE</span></div>
-                  <div><div class="text-[10px] text-slate-500">Net +${p.target_net_pct}%</div><span class="text-[#00E676]">$${p.net_target_price}</span></div>
+                  <div><div class="text-[10px] text-slate-500">Net +${p.target_net_pct}%</div><span class="text-[#00E676]">${fmtPx(p.net_target_price)}</span></div>
                 </div>
                 <div class="text-[10px] text-slate-400 mt-2">${p.rationale}</div>
                 <div class="mt-3 flex gap-2">
@@ -661,7 +730,7 @@
           </div>
 
           <div class="card p-4 space-y-2.5">
-            <div><h3 class="text-sm font-extrabold text-white">🛡️ Top 10 Blue-Chip 4-Point Bounce Radar</h3><p class="text-[11px] text-slate-400">Support Dip • RSI Oversold • OKX Footprint Buy Absorption • Macro News Shield</p></div>
+            <div><h3 class="text-sm font-extrabold text-white">🛡️ Top 10 Blue-Chip 4-Point Bounce Radar (${currMode})</h3><p class="text-[11px] text-slate-400">Support Dip • RSI Oversold • OKX Footprint Buy Absorption • Macro News Shield</p></div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
               ${radar.map(r => {
                 const badgeCol = r.stage === 'BUY_READY' ? 'bg-[#00E676]/20 text-[#00E676]' : (r.stage === 'DUMP_BLOCKED' ? 'bg-[#FF3B5C]/20 text-[#FF3B5C]' : 'bg-slate-800 text-slate-300');
@@ -669,7 +738,7 @@
                   <div class="min-w-0">
                     <div class="flex items-center gap-1.5 flex-wrap">
                       <span class="text-sm font-extrabold text-white">${r.symbol}</span>
-                      <span class="text-xs mono text-slate-300">$${r.ltp}</span>
+                      <span class="text-xs mono text-slate-300">${fmtPx(r.ltp)}</span>
                       <span class="text-[10px] mono font-bold ${Number(r.dip_from_high_pct)<=-2?'text-[#F5B700]':'text-slate-400'}">Dip ${r.dip_from_high_pct}%</span>
                     </div>
                     <div class="text-[10px] text-slate-400 mt-1">RSI ${r.rsi_15m} • CVD ${Number(r.footprint_delta_pct)>=0?'+':''}${r.footprint_delta_pct}% • L2 ${r.buy_pct}% Buy</div>
@@ -685,9 +754,9 @@
           </div>
 
           <div class="card p-4">
-            <h3 class="text-sm font-extrabold text-white">⚙️ Spot Vault Settings (Editable Anytime)</h3>
+            <h3 class="text-sm font-extrabold text-white">⚙️ Spot Vault Settings (Editable in ${currMode})</h3>
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-xs">
-              <div><label class="text-slate-400">Per-Coin Budget ($)</label><input id="sp-budget" type="number" value="${scfg.per_coin_budget_usdt||120}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+              <div><label class="text-slate-400">Per-Coin Budget (${curSym})</label><input id="sp-budget" type="number" value="${defBudgetDisp}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
               <div><label class="text-slate-400">Net Target %</label><input id="sp-tgt" type="number" step="0.5" value="${scfg.target_net_pct||5.0}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
               <div><label class="text-slate-400">Max Active Coins</label><input id="sp-max" type="number" value="${scfg.max_active_coins||3}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
               <div><label class="text-slate-400">Auto Blue-Chip Scan</label><select id="sp-auto" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white"><option value="true" ${scfg.enabled!==false?'selected':''}>ON</option><option value="false" ${scfg.enabled===false?'selected':''}>OFF (Manual Only)</option></select></div>
@@ -697,22 +766,16 @@
 
           <div class="card p-4">
             <h3 class="text-sm font-extrabold text-white mb-2">Closed Spot Profit Ledger (${sClosed.length})</h3>
-            <div class="space-y-2">${sClosed.length === 0 ? `<div class="text-xs text-slate-500">No closed spot trades yet.</div>` : sClosed.map(c => `<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><span class="text-sm font-bold text-white">${c.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676]">${c.outcome}</span><div class="text-[11px] text-slate-500">Avg $${c.avg_entry_price} → $${c.exit_fill_price} • DCA ${c.tranches_filled}/${c.max_tranches} • ${c.exit_reason}</div></div><div class="flex items-center gap-3"><span class="mono text-sm font-bold ${Number(c.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${Number(c.net_pnl_usdt)>=0?'+':''}${fmtU(c.net_pnl_usdt)}</span><button onclick="delSpotPos('${c.position_id}')" class="text-[10px] text-slate-400 hover:text-[#FF3B5C]">Delete</button></div></div>`).join('')}</div>
+            <div class="space-y-2">${sClosed.length === 0 ? `<div class="text-xs text-slate-500">No closed spot trades yet.</div>` : sClosed.map(c => `<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><span class="text-sm font-bold text-white">${c.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676]">${c.outcome}</span><div class="text-[11px] text-slate-500">Avg ${fmtPx(c.avg_entry_price)} → ${fmtPx(c.exit_fill_price)} • DCA ${c.tranches_filled}/${c.max_tranches}</div></div><div class="flex items-center gap-3"><span class="mono text-sm font-bold ${Number(c.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(c.net_pnl_usdt, true)}</span><button onclick="delSpotPos('${c.position_id}')" class="text-[10px] text-slate-400 hover:text-[#FF3B5C]">Delete</button></div></div>`).join('')}</div>
           </div>`;
       } else if (section === 'markets') {
         const items = marketsData?.items || [];
         el.innerHTML = `
           <div class="card p-4 space-y-3">
-            <div class="flex flex-wrap justify-between items-center gap-2">
-              <div><h2 class="text-base font-extrabold text-white">🌐 All ${marketsData?.total_market_coins || '534+'} Live OKX USDT Coins</h2><p class="text-xs text-slate-400">Tap any coin to open real-time 1m–1d Candlesticks, Footprint CVD &amp; L2 Orderbook.</p></div>
-            </div>
+            <div><h2 class="text-base font-extrabold text-white">🌐 All ${marketsData?.total_market_coins || '534+'} Live OKX Coins (${currMode})</h2><p class="text-xs text-slate-400">Tap any coin to open real-time 1m–1d Candlesticks, Footprint CVD &amp; L2 Orderbook.</p></div>
             <div class="flex flex-wrap gap-2">
               <input value="${marketSearch}" oninput="onMarketSearch(this.value)" placeholder="Search coin (BTC, PEPE, SUI, WIF...)" class="flex-1 min-w-[180px] px-3 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-xs text-white uppercase" />
-              ${[
-                { id:'volume', l:'Top Volume' },
-                { id:'gainers', l:'🚀 Top Gainers' },
-                { id:'losers', l:'🔻 Top Losers' }
-              ].map(s => `<button onclick="setMarketSort('${s.id}')" class="px-3 py-1.5 rounded-xl text-xs font-bold border ${marketSort===s.id?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${s.l}</button>`).join('')}
+              ${[{ id:'volume', l:'Top Volume' }, { id:'gainers', l:'🚀 Top Gainers' }, { id:'losers', l:'🔻 Top Losers' }].map(s => `<button onclick="setMarketSort('${s.id}')" class="px-3 py-1.5 rounded-xl text-xs font-bold border ${marketSort===s.id?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${s.l}</button>`).join('')}
             </div>
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -720,31 +783,33 @@
               const up = Number(m.change_24h_pct) >= 0;
               return `<button onclick="openChart('${m.symbol}')" class="card p-3 flex items-center justify-between text-left hover:border-[#00D4FF] transition">
                 <div><div class="text-sm font-extrabold text-white">${m.symbol}</div><div class="text-[10px] text-slate-400">24h Vol: ${fmtVol(m.volume_24h_usdt)}</div></div>
-                <div class="text-right mono"><div class="text-sm font-bold text-white">$${m.ltp}</div><div class="text-xs font-bold ${up?'text-[#00E676]':'text-[#FF3B5C]'}">${up?'+':''}${m.change_24h_pct}%</div></div>
+                <div class="text-right mono"><div class="text-sm font-bold text-white">${fmtPx(m.ltp)}</div><div class="text-xs font-bold ${up?'text-[#00E676]':'text-[#FF3B5C]'}">${up?'+':''}${m.change_24h_pct}%</div></div>
               </button>`;
             }).join('')}
           </div>`;
       } else if (section === 'boom') {
-        el.innerHTML = `<div class="card p-4 border-[#A855F7]/40"><h2 class="text-base font-extrabold text-white">🚀 Daily Boom Radar (534-Coin Dynamic • Strict 1x)</h2><p class="text-xs text-slate-400 mt-0.5">Screens ALL 534+ OKX coins for +4% to +30% volume breakouts with Footprint Anti-Dump protection.</p></div>
-          <div class="space-y-2.5">${boomData.map(b => `<button onclick="openChart('${b.symbol}')" class="w-full text-left card p-4 hover:border-[#A855F7] transition"><div class="flex justify-between items-start gap-2"><div><span class="text-base font-extrabold text-white">${b.symbol}</span> <span class="text-xs mono text-slate-300">$${b.ltp}</span> <span class="text-xs mono font-bold text-[#00E676]">${Number(b.change_24h_pct)>=0?'+':''}${b.change_24h_pct}%</span><div class="text-[11px] text-slate-400 mt-1">${(b.checks||[]).join(' • ')}</div></div><span class="text-[10px] font-bold px-2 py-1 rounded bg-[#A855F7]/20 text-[#D8B4FE]">${b.stage} (${b.score})</span></div></button>`).join('')}</div>`;
+        el.innerHTML = `<div class="card p-4 border-[#A855F7]/40"><h2 class="text-base font-extrabold text-white">🚀 Daily Boom Radar (534-Coin Dynamic • ${currMode})</h2><p class="text-xs text-slate-400 mt-0.5">Screens ALL 534+ OKX coins for +4% to +30% volume breakouts with Footprint Anti-Dump protection.</p></div>
+          <div class="space-y-2.5">${boomData.map(b => `<button onclick="openChart('${b.symbol}')" class="w-full text-left card p-4 hover:border-[#A855F7] transition"><div class="flex justify-between items-start gap-2"><div><span class="text-base font-extrabold text-white">${b.symbol}</span> <span class="text-xs mono text-slate-300">${fmtPx(b.ltp)}</span> <span class="text-xs mono font-bold text-[#00E676]">${Number(b.change_24h_pct)>=0?'+':''}${b.change_24h_pct}%</span><div class="text-[11px] text-slate-400 mt-1">${(b.checks||[]).join(' • ')}</div></div><span class="text-[10px] font-bold px-2 py-1 rounded bg-[#A855F7]/20 text-[#D8B4FE]">${b.stage} (${b.score})</span></div></button>`).join('')}</div>`;
       } else if (section === 'catalyst') {
         el.innerHTML = `<div class="card p-4 border-[#F5B700]/35"><h2 class="text-base font-extrabold text-white">⚡ Macro &amp; Catalyst Radar (Musk / Trump / Fed / SEC)</h2></div>
           <div class="space-y-2.5">${catalystData.map(n => `<a href="${n.url||'#'}" target="_blank" rel="noreferrer" class="block card p-4"><div class="flex justify-between text-[10px]"><span class="font-bold text-[#F5B700]">${n.tag}</span><span class="text-slate-400">${n.source}</span></div><div class="text-sm font-bold text-white mt-1">${n.headline}</div><div class="mt-2 flex gap-1.5 flex-wrap text-[10px]">${(n.mapped_coins||[]).map(c=>`<span class="px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] mono font-bold">${c}</span>`).join('')}<span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 font-bold">${n.impact}</span></div></a>`).join('')}</div>`;
       } else if (section === 'lab') {
         const list = openPos.filter(p => labFilter==='ALL' || p.tier===labFilter);
         el.innerHTML = `<div class="card p-4 flex justify-between items-center flex-wrap gap-2"><div><h2 class="text-base font-extrabold text-white">🧪 Backend Accuracy Lab vs ⭐ Telegram Elite</h2></div><div class="flex gap-1.5">${['ALL','ELITE_TG','BACKEND_LAB'].map(f=>`<button onclick="setLabF('${f}')" class="px-3 py-1 rounded-xl text-xs font-bold border ${labFilter===f?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${f}</button>`).join('')}</div></div>
-          <div class="space-y-2">${list.map(p=>`<div class="card p-3.5 flex justify-between items-center"><div><div class="text-sm font-bold text-white">${p.symbol} <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#141B2D] text-[#F5B700]">${p.tier}</span></div><div class="text-[11px] text-slate-400">${p.engine_code} • Score ${p.score}</div></div><div class="text-right mono text-sm font-bold ${Number(p.unrealised_net_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtU(p.unrealised_net_usdt)}</div></div>`).join('')}</div>`;
+          <div class="space-y-2">${list.map(p=>`<div class="card p-3.5 flex justify-between items-center"><div><div class="text-sm font-bold text-white">${p.symbol} <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#141B2D] text-[#F5B700]">${p.tier}</span></div><div class="text-[11px] text-slate-400">${p.engine_code} • Score ${p.score}</div></div><div class="text-right mono text-sm font-bold ${Number(p.unrealised_net_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(p.unrealised_net_usdt, true)}</div></div>`).join('')}</div>`;
       } else if (section === 'portfolio') {
         const cfg = overview?.config || {};
-        el.innerHTML = `<div class="card p-4"><h2 class="text-base font-extrabold text-white">Portfolio &amp; Permanent Supabase Sync</h2><p class="text-xs text-slate-400 mt-0.5">Trades survive every code push &amp; Render restart. Only manual Delete removes a trade.</p>
+        const startDisp = currMode === 'INR' ? Math.round(Number(cfg.starting_usdt || 1000) * inrRate()) : Number(cfg.starting_usdt || 1000);
+        const perDisp = currMode === 'INR' ? Math.round(Number(cfg.per_trade_usdt || 200) * inrRate()) : Number(cfg.per_trade_usdt || 200);
+        el.innerHTML = `<div class="card p-4"><h2 class="text-base font-extrabold text-white">Portfolio &amp; Permanent Supabase Sync (${currMode})</h2><p class="text-xs text-slate-400 mt-0.5">Trades survive every code push &amp; Render restart. Only manual Delete removes a trade.</p>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-xs">
-            <div><label class="text-slate-400">Start USDT</label><input id="c-start" type="number" value="${cfg.starting_usdt||1000}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
-            <div><label class="text-slate-400">Per-Trade USDT</label><input id="c-per" type="number" value="${cfg.per_trade_usdt||200}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+            <div><label class="text-slate-400">Start Capital (${curSym})</label><input id="c-start" type="number" value="${startDisp}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+            <div><label class="text-slate-400">Per-Trade (${curSym})</label><input id="c-per" type="number" value="${perDisp}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
             <div><label class="text-slate-400">Max Leverage</label><input id="c-lev" type="number" step="0.5" value="${cfg.max_leverage||2}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
             <div><label class="text-slate-400">TG Elite Cap/24h</label><input id="c-tg" type="number" value="${cfg.telegram_daily_cap||6}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
           </div>
           <button onclick="saveCfg()" class="mt-3 px-4 py-2 rounded-xl bg-[#00E676] text-[#04120B] font-bold text-xs">Save Settings</button></div>
-          <div class="card p-4"><h3 class="text-sm font-extrabold text-white mb-2">Closed Ledger (${closed.length})</h3><div class="space-y-2">${closed.map(c=>`<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><span class="text-sm font-bold text-white">${c.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800">${c.outcome}</span><div class="text-[11px] text-slate-500">${c.engine_code} • ${c.exit_reason}</div></div><div class="flex items-center gap-3"><span class="mono text-sm font-bold ${Number(c.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtU(c.net_pnl_usdt)}</span><button onclick="delPos('${c.position_id}')" class="text-[10px] text-slate-400 hover:text-[#FF3B5C]">Delete</button></div></div>`).join('')}</div></div>`;
+          <div class="card p-4"><h3 class="text-sm font-extrabold text-white mb-2">Closed Ledger (${closed.length})</h3><div class="space-y-2">${closed.map(c=>`<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><span class="text-sm font-bold text-white">${c.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800">${c.outcome}</span><div class="text-[11px] text-slate-500">${c.engine_code} • ${c.exit_reason}</div></div><div class="flex items-center gap-3"><span class="mono text-sm font-bold ${Number(c.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(c.net_pnl_usdt, true)}</span><button onclick="delPos('${c.position_id}')" class="text-[10px] text-slate-400 hover:text-[#FF3B5C]">Delete</button></div></div>`).join('')}</div></div>`;
       } else if (section === 'system') {
         el.innerHTML = `<div class="card p-4"><div class="flex justify-between items-center"><h2 class="text-base font-extrabold text-white">System &amp; 3-Tier Exchange Feeds</h2><button onclick="apiFetch('/api/v1/telegram/test',{method:'POST',body:'{}'}).then(()=>showToast('Telegram test sent'))" class="px-3 py-1.5 rounded-xl bg-[#00D4FF]/15 text-[#00D4FF] text-xs font-bold">Test Telegram</button></div>
           <div class="mt-3 space-y-2">${(connData?.services||[]).map(s=>`<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><div class="text-xs font-bold text-white">${s.name}</div><div class="text-[11px] text-slate-400">${s.detail}</div></div><span class="text-[10px] font-bold px-2 py-1 rounded ${s.ok?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${s.ok?'CONNECTED':'FAILOVER'}</span></div>`).join('')}</div></div>`;
