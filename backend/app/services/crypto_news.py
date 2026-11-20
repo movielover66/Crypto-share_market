@@ -292,10 +292,18 @@ class CryptoTelegramNotifier:
             return None
         return {"inline_keyboard": [[{"text": btn_label, "url": self.app_url}]]}
 
-    def send_html(self, html_text: str, btn_label: str = "Open Desk") -> Dict[str, Any]:
+    def send_html(
+        self,
+        html_text: str,
+        btn_label: str = "Open Desk",
+        reply_to_message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         if not self.enabled:
             return {"delivered": False, "reason": "NOT_CONFIGURED"}
         body: Dict[str, Any] = {"chat_id": self.chat_id, "text": html_text, "parse_mode": "HTML"}
+        if reply_to_message_id:
+            body["reply_to_message_id"] = int(reply_to_message_id)
+            body["allow_sending_without_reply"] = True
         rm = self._reply_markup(btn_label)
         if rm:
             body["reply_markup"] = rm
@@ -309,13 +317,26 @@ class CryptoTelegramNotifier:
         try:
             with urllib.request.urlopen(req, timeout=6.0) as resp:
                 ok = 200 <= resp.status < 300
+                raw = resp.read()
+                msg_id = None
+                try:
+                    parsed = json.loads(raw.decode("utf-8"))
+                    msg_id = parsed.get("result", {}).get("message_id")
+                except Exception:
+                    pass
                 self.last_error = None if ok else f"HTTP_{resp.status}"
-                return {"delivered": ok}
+                return {"delivered": ok, "message_id": msg_id}
         except Exception as exc:
             self.last_error = type(exc).__name__
             return {"delivered": False, "error": self.last_error}
 
-    def send_photo_bytes(self, png_bytes: bytes, caption_html: str, btn_label: str = "Open Desk") -> Dict[str, Any]:
+    def send_photo_bytes(
+        self,
+        png_bytes: bytes,
+        caption_html: str,
+        btn_label: str = "Open Desk",
+        reply_to_message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         if not self.enabled:
             return {"delivered": False, "reason": "NOT_CONFIGURED"}
         boundary = f"----TradeIQBoundary{uuid.uuid4().hex}"
@@ -329,6 +350,9 @@ class CryptoTelegramNotifier:
         _add_field("chat_id", self.chat_id)
         _add_field("caption", caption_html)
         _add_field("parse_mode", "HTML")
+        if reply_to_message_id:
+            _add_field("reply_to_message_id", str(int(reply_to_message_id)))
+            _add_field("allow_sending_without_reply", "true")
         rm = self._reply_markup(btn_label)
         if rm:
             _add_field("reply_markup", json.dumps(rm))
@@ -350,11 +374,18 @@ class CryptoTelegramNotifier:
         try:
             with urllib.request.urlopen(req, timeout=10.0) as resp:
                 ok = 200 <= resp.status < 300
+                raw = resp.read()
+                msg_id = None
+                try:
+                    parsed = json.loads(raw.decode("utf-8"))
+                    msg_id = parsed.get("result", {}).get("message_id")
+                except Exception:
+                    pass
                 self.last_error = None if ok else f"HTTP_{resp.status}"
-                return {"delivered": ok, "photo": True}
+                return {"delivered": ok, "photo": True, "message_id": msg_id}
         except Exception as exc:
             self.last_error = type(exc).__name__
-            return self.send_html(caption_html, btn_label=btn_label)
+            return self.send_html(caption_html, btn_label=btn_label, reply_to_message_id=reply_to_message_id)
 
     def send_pnl_card(
         self,
@@ -370,14 +401,15 @@ class CryptoTelegramNotifier:
         caption_html: str,
         ts_label: str = "",
         btn_label: str = "Open Desk",
+        reply_to_message_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Generates a category-colored Dark Obsidian PNG card and sends via sendPhoto (graceful HTML fallback)."""
         if not self.enabled:
             return {"delivered": False, "reason": "NOT_CONFIGURED"}
         png = render_pnl_card_png(category, badge_text, symbol, sub_pill, big_pnl, sub_pnl, col1, col2, col3, ts_label)
         if png:
-            return self.send_photo_bytes(png, caption_html, btn_label=btn_label)
-        return self.send_html(caption_html, btn_label=btn_label)
+            return self.send_photo_bytes(png, caption_html, btn_label=btn_label, reply_to_message_id=reply_to_message_id)
+        return self.send_html(caption_html, btn_label=btn_label, reply_to_message_id=reply_to_message_id)
 
     def send_alert(self, title: str, body: str, ts_label: str = "") -> Dict[str, Any]:
         """Backward-compatible clean HTML alert helper (Sapphire/Cyan summary & test style)."""
