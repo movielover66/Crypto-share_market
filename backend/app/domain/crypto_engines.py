@@ -327,7 +327,13 @@ def evaluate_engine_3_funding_rsi2(symbol: str, c4h: List[CryptoCandle], ticker:
     )
 
 
-def evaluate_boom_radar(symbol: str, c15: List[CryptoCandle], ticker: Optional[CryptoTicker], depth: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_boom_radar(
+    symbol: str,
+    c15: List[CryptoCandle],
+    ticker: Optional[CryptoTicker],
+    depth: Dict[str, Any],
+    footprint: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Dedicated Daily Boom Radar for volatile small/mid-cap USDT coins.
     Strictly enforces 1x micro-sizing to protect core capital.
@@ -360,7 +366,15 @@ def evaluate_boom_radar(symbol: str, c15: List[CryptoCandle], ticker: Optional[C
         score += 8
         checks.append(f"L2 Buy {buy_pct:.0f}%")
 
-    stage = "BOOM TRIGGERED" if score >= 82 else ("EARLY EXPANSION" if score >= 68 else "WATCHING BASE")
+    # Anti-Dump Footprint Protection: block boom trigger if big sellers are already dumping!
+    dpct = float((footprint or {}).get("delta_pct", 0.0))
+    if dpct >= 8.0:
+        score += 10
+        checks.append(f"Footprint Buy Flow ({dpct:+.1f}%)")
+    elif dpct <= -10.0:
+        score -= 22
+        checks.append(f"⚠️ Seller Dump Detected ({dpct:+.1f}%)")
+    stage = "BOOM TRIGGERED" if (score >= 82 and dpct > -5.0) else ("EARLY EXPANSION" if score >= 68 else "WATCHING BASE")
     entry = _quant(ltp)
     sl = _quant(entry * Decimal("0.96"))
     target = _quant(entry * Decimal("1.12"))
