@@ -283,14 +283,16 @@ class SpotVaultEngine:
             store.upsert_spot_position(pos)
         if tg and tg.enabled:
             inr_val = _q(tr1_usdt * usdt_inr, "1")
-            tg.send_alert(
-                f"🪙 SPOT BUY ({pos.tranches_filled}/{pos.max_tranches}) — {sym}",
-                f"💰 Invested: ${tr1_usdt} (≈ ₹{inr_val}) | Budget: ${budget}\n"
-                f"🎯 Entry: ${pos.avg_entry_price} | Net Target (+{pos.target_net_pct}%): ${pos.net_target_price}\n"
-                f"🛡️ Stop-Loss: NONE (1x Spot Vault)\n"
-                f"📌 {pos.rationale}",
-                now_ist.strftime("%d %b %Y, %I:%M %p IST"),
-            )
+            ts_str = now_ist.strftime("%I:%M %p IST")
+            if hasattr(tg, "send_html"):
+                msg = (
+                    f"🟡🪙 <b>SPOT VAULT BUY ({pos.tranches_filled}/{pos.max_tranches})</b> • <code>{sym}</code>\n"
+                    f"Buy <code>${pos.avg_entry_price}</code> | Target (+{pos.target_net_pct}%) <code>${pos.net_target_price}</code> | SL: <b>NONE</b>\n"
+                    f"<i>Invested ${tr1_usdt} (₹{inr_val}) of ${budget} • {ts_str}</i>"
+                )
+                tg.send_html(msg, btn_label="🪙 Open Spot Vault")
+            else:
+                tg.send_alert(f"SPOT BUY — {sym}", f"Buy ${pos.avg_entry_price}", ts_str)
         return pos
 
     def add_dca_tranche(
@@ -327,13 +329,16 @@ class SpotVaultEngine:
             store.upsert_spot_position(pos)
         if tg and tg.enabled:
             inr_tot = _q(pos.total_invested_usdt * usdt_inr, "1")
-            tg.send_alert(
-                f"🪙 SPOT DCA #{pos.tranches_filled}/{pos.max_tranches} — {pos.symbol}",
-                f"📥 Added: ${add_usdt} at ${ltp} | Total: ${pos.total_invested_usdt} (≈ ₹{inr_tot})\n"
-                f"📉 New Avg Buy: ${pos.avg_entry_price} | New Target (+{pos.target_net_pct}%): ${pos.net_target_price}\n"
-                f"🛡️ Stop-Loss: NONE (Spot Holding)",
-                now_ist.strftime("%d %b %Y, %I:%M %p IST"),
-            )
+            ts_str = now_ist.strftime("%I:%M %p IST")
+            if hasattr(tg, "send_html"):
+                msg = (
+                    f"🟡📥 <b>SPOT DCA #{pos.tranches_filled}/{pos.max_tranches}</b> • <code>{pos.symbol}</code>\n"
+                    f"New Avg <code>${pos.avg_entry_price}</code> | Target <code>${pos.net_target_price}</code> | SL: <b>NONE</b>\n"
+                    f"<i>Added ${add_usdt} @ ${ltp} • Total ${pos.total_invested_usdt} (₹{inr_tot}) • {ts_str}</i>"
+                )
+                tg.send_html(msg, btn_label="🪙 Open Spot Vault")
+            else:
+                tg.send_alert(f"SPOT DCA #{pos.tranches_filled} — {pos.symbol}", f"Avg ${pos.avg_entry_price}", ts_str)
         return pos
 
     def close_spot_position(
@@ -365,13 +370,32 @@ class SpotVaultEngine:
             store.close_spot_position(pos)
         if tg and tg.enabled:
             inr_pnl = _q(net_pnl * usdt_inr, "1")
-            icon = "🎉" if net_pnl >= 0 else "📤"
-            tg.send_alert(
-                f"{icon} SPOT {reason} — {pos.symbol}",
-                f"💰 Net Profit: {'+' if net_pnl >= 0 else ''}${net_pnl} (≈ ₹{inr_pnl}) after 0.20% Spot fees\n"
-                f"📊 Avg Buy: ${pos.avg_entry_price} → Sold: ${pos.exit_fill_price} ({pos.tranches_filled}/{pos.max_tranches} tranches)",
-                now_ist.strftime("%d %b %Y, %I:%M %p IST"),
+            sign = "+" if net_pnl >= 0 else ""
+            pct_net = _q((net_pnl / pos.total_invested_usdt) * Decimal("100")) if pos.total_invested_usdt > 0 else Decimal("0.00")
+            ts_str = now_ist.strftime("%d %b • %I:%M %p IST")
+            cat = "SPOT_WIN" if net_pnl >= 0 else "SPOT_EXIT"
+            badge = "SPOT TARGET HIT" if reason == "SPOT_TARGET_HIT" else "SPOT SOLD"
+            cap = (
+                f"🟡🏆 <b>{badge}</b> • <code>{pos.symbol}</code>\n"
+                f"Sold <code>${pos.exit_fill_price}</code> | Net <b>{sign}${net_pnl}</b> ({sign}{pct_net}% • ₹{inr_pnl})"
             )
+            if hasattr(tg, "send_pnl_card"):
+                tg.send_pnl_card(
+                    category=cat,
+                    badge_text=badge,
+                    symbol=pos.symbol,
+                    sub_pill=f"SPOT DCA {pos.tranches_filled}/{pos.max_tranches} • NO SL",
+                    big_pnl=f"{sign}${net_pnl}",
+                    sub_pnl=f"{sign}{pct_net}%  |  {sign}Rs {abs(inr_pnl)} Net",
+                    col1=("AVG BUY", f"${pos.avg_entry_price}"),
+                    col2=("SOLD EXIT", f"${pos.exit_fill_price}"),
+                    col3=("STOP-LOSS", "NONE (1x)"),
+                    caption_html=cap,
+                    ts_label=ts_str,
+                    btn_label="🪙 Open Spot Vault",
+                )
+            else:
+                tg.send_alert(f"SPOT {reason} — {pos.symbol}", f"Net {sign}${net_pnl}", ts_str)
         return pos
 
     def monitor_open_positions(
