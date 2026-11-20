@@ -1,10 +1,10 @@
 """
-TRADEIQ Crypto v1.0 — 24/7 Autonomous USDT-M Perpetual Paper-Trading Platform.
-- 3-Tier Free Public Exchange Failover: Bybit v5 -> OKX v5 -> Kraken v2
-- 4-Engine Quant Suite + Daily Boom Radar (1x Micro-Size) + Macro Catalyst Radar (Musk/Trump/Fed/SEC)
+TRADEIQ Crypto v1.0 — 24/7 Autonomous USDT-M Perpetual + Institutional Spot Buy Vault Platform.
+- 3-Tier Free Public Exchange Failover: OKX v5 Primary -> Bybit v5 -> Kraken v2
+- 5-Engine Quant Suite + Daily Boom Radar (1x Micro-Size) + Macro Catalyst Radar + Institutional Spot Buy Vault (No-SL, 3-Step Smart DCA)
 - Two-Tier Pipeline: Full Backend Accuracy Lab vs Top 5-7/Day Telegram Elite Alerts
-- Permanent Supabase Auto-Persistence (`market="CRYPTO"`): survives every code push & Render restart
-- Single-Owner JWT Authentication + 500ms Live WebSocket (/api/v1/ws/live)
+- Permanent Supabase Auto-Persistence (`market="CRYPTO_V1"` & `market="CRYPTO_SPOT"`): survives every code push & Render restart
+- Single-Owner JWT Authentication + Live WebSocket (/api/v1/ws/live)
 """
 import asyncio
 import datetime
@@ -34,6 +34,11 @@ from .domain.crypto_engines import (
     evaluate_engine_4_shadow_sweep,
 )
 from .domain.crypto_simulator import CryptoPaperEngine, IST
+from .domain.spot_vault import (
+    BLUECHIP_SPOT_UNIVERSE,
+    SpotVaultEngine,
+    evaluate_spot_bounce,
+)
 from .providers.crypto_provider import (
     BOOM_CRYPTO_UNIVERSE,
     CORE_CRYPTO_UNIVERSE,
@@ -62,8 +67,96 @@ class ConfigUpdateRequest(BaseModel):
     reset_kill_switch: Optional[bool] = False
 
 
+class SpotConfigUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    starting_usdt: Optional[float] = None
+    per_coin_budget_usdt: Optional[float] = None
+    target_net_pct: Optional[float] = None
+    max_active_coins: Optional[int] = None
+
+
+class SpotBuyRequest(BaseModel):
+    symbol: str
+    budget_usdt: Optional[float] = None
+    target_net_pct: Optional[float] = None
+    single_shot: bool = False
+
+
 class ScanRequest(BaseModel):
     execute_entries: bool = True
+
+
+def _run_spot_vault_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[str, Any]:
+    prov: MultiExchangeCryptoProvider = app.state.provider
+    vault: SpotVaultEngine = app.state.spot_vault
+    store: CryptoSupabaseStore = app.state.store
+    news_svc: CryptoCatalystNewsService = app.state.news_svc
+    tg: CryptoTelegramNotifier = app.state.tg
+
+    now_ist = datetime.datetime.now(IST)
+    vault.last_scan_ist = now_ist.isoformat()
+    tickers = prov.refresh_all_tickers()
+    usdt_inr = prov.get_usdt_inr()
+    news_items = news_svc.refresh_news()
+    ltp_map = {s: t.ltp for s, t in tickers.items()}
+
+    risk_blocked: set = set()
+    for n in news_items[:12]:
+        if n.get("impact") == "HIGH_RISK":
+            for c in n.get("mapped_coins") or []:
+                risk_blocked.add(c.upper())
+
+    open_spot_syms = {p.symbol for p in vault.positions.values() if p.status == "OPEN"}
+    footprints: Dict[str, Dict[str, Any]] = {}
+    for sym in open_spot_syms:
+        footprints[sym] = prov.get_footprint_cvd(sym)
+    monitor_actions = vault.monitor_open_positions(ltp_map, footprints, now_ist, store, tg, usdt_inr)
+
+    radar_rows: List[Dict[str, Any]] = []
+    for sym in BLUECHIP_SPOT_UNIVERSE:
+        c15 = prov.get_candles(sym, "15m", 35)
+        c1h = prov.get_candles(sym, "1h", 30)
+        depth = prov.get_orderbook_depth(sym)
+        fp = footprints.get(sym) or prov.get_footprint_cvd(sym)
+        row = evaluate_spot_bounce(sym, c15, c1h, tickers.get(sym), depth, fp, risk_blocked)
+        radar_rows.append(row)
+
+    radar_rows.sort(key=lambda x: (1 if x["stage"] == "BUY_READY" else 0, x["score"]), reverse=True)
+    vault.last_radar = radar_rows
+
+    opened: List[Dict[str, Any]] = []
+    if execute_entries and vault.config.enabled:
+        active_syms = {p.symbol for p in vault.positions.values() if p.status == "OPEN"}
+        for item in radar_rows:
+            if len(active_syms) >= vault.config.max_active_coins:
+                break
+            sym = item["symbol"]
+            if item["stage"] != "BUY_READY" or sym in active_syms:
+                continue
+            ltp = ltp_map.get(sym) or Decimal(item["ltp"])
+            if ltp <= 0:
+                continue
+            pos = vault.open_spot_position(
+                symbol=sym,
+                ltp=ltp,
+                now_ist=now_ist,
+                mode="AUTO_DCA",
+                rationale=f"4-Point Bounce ({item['score']}/100): " + " • ".join(item["passed_rules"][:3]),
+                store=store,
+                tg=tg,
+                usdt_inr=usdt_inr,
+            )
+            active_syms.add(sym)
+            opened.append({"position_id": pos.position_id, "symbol": sym, "avg_entry": str(pos.avg_entry_price)})
+
+    return {
+        "scan_ist": vault.last_scan_ist,
+        "bluechips_scanned": len(radar_rows),
+        "buy_ready_count": sum(1 for r in radar_rows if r["stage"] == "BUY_READY"),
+        "opened_count": len(opened),
+        "opened_trades": opened,
+        "monitor_actions": monitor_actions,
+    }
 
 
 def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[str, Any]:
@@ -79,16 +172,13 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     usdt_inr = prov.get_usdt_inr()
     news_items = news_svc.refresh_news()
 
-    # Build live LTP map & monitor open positions first
     ltp_map = {s: t.ltp for s, t in tickers.items()}
     monitor_actions = eng.monitor_open_positions(ltp_map, now_ist, store, tg)
 
-    # Engine 0: BTC Regime Gate
     btc_4h = prov.get_candles("BTCUSDT", "4h", 120)
     regime = evaluate_btc_regime(btc_4h, tickers.get("BTCUSDT"))
     eng.last_regime = regime
 
-    # High-risk blocked symbols from News Shield
     risk_blocked: set = set()
     bull_catalysts: Dict[str, str] = {}
     for n in news_items[:12]:
@@ -100,7 +190,6 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 bull_catalysts.setdefault(c.upper(), f"{n.get('tag')}: {n.get('headline', '')[:90]}")
 
     signals: List[CryptoSignal] = []
-    # 100% DYNAMIC FULL-MARKET SCREENING (ALL 534+ LIVE OKX COINS — ZERO HARDCODED COIN LIST!)
     liquid_all = [
         t for t in tickers.values()
         if t.symbol.endswith("USDT") and t.ltp > 0 and t.volume_24h_usdt >= Decimal("5000000")
@@ -108,7 +197,6 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     if not liquid_all:
         liquid_all = list(tickers.values())
 
-    # Dynamic Core Funnel: Top 10 by 24h Liquidity + Top 6 Highest-Momentum Active Movers across ALL 534 coins
     by_vol = sorted(liquid_all, key=lambda t: t.volume_24h_usdt, reverse=True)[:10]
     by_mom = sorted(
         [t for t in liquid_all if Decimal("2.5") <= abs(t.change_24h_pct) <= Decimal("26.0")],
@@ -129,9 +217,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
         eff_chg = min(sym_chg, btc_chg) if sym_chg < 0 else max(sym_chg, btc_chg)
         if c15:
             s1 = evaluate_engine_1_breakout(sym, c15, depth, c1h=c1h, footprint=fp, change_24h_pct=eff_chg)
-            # Engine 4: Institutional Stop-Hunt Liquidity Sweep + Footprint Absorption
             signals.append(evaluate_engine_4_shadow_sweep(sym, c15, footprint=fp, crowd=crowd))
-            # Catalyst Boost if breaking news + live volume confirmation
             if eng.config.enable_catalyst_radar and sym in bull_catalysts and s1.direction == "LONG" and s1.score >= 70:
                 s1 = CryptoSignal(
                     symbol=s1.symbol, engine_code="CATALYST_MOMENTUM", horizon_bucket="intraday",
@@ -148,7 +234,6 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             signals.append(evaluate_engine_2_donchian(sym, c4h))
             signals.append(evaluate_engine_3_funding_rsi2(sym, c4h, tickers.get(sym)))
 
-    # Dynamic Daily Boom Radar across ALL 534+ live coins (no fixed list — catches EVERY new/emerging mover!)
     boom_candidates = sorted(
         [
             t for t in liquid_all
@@ -217,15 +302,12 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 continue
             if sig.status != "CONFIRMED" or sig.symbol in open_syms or sig.symbol in risk_blocked:
                 continue
-            # Institutional Same-Direction Correlation Cap: Max 2 simultaneous LONGs or 2 SHORTs
             if dir_counts.get(sig.direction, 0) >= 2 and not is_boom:
                 continue
-            # Boom Radar (1x micro-size + Footprint Anti-Dump) & Engine 4 Shadow Sweep can trade decoupled moves even in BTC Bear regime
             if sig.direction == "LONG" and not regime.allow_longs and sig.engine_code not in ("ENGINE_4_SHADOW_SWEEP", "BOOM_RADAR"):
                 continue
             if sig.direction == "SHORT" and not regime.allow_shorts and sig.engine_code != "ENGINE_4_SHADOW_SWEEP":
                 continue
-            # Hybrid Gemini / Footprint Trap Veto Judge before executing!
             fp_now = prov.get_footprint_cvd(sig.symbol)
             sym_chg_now = float(tickers[sig.symbol].change_24h_pct) if sig.symbol in tickers else 0.0
             verdict = trap_judge.evaluate_trade({
@@ -263,34 +345,46 @@ async def _crypto_24_7_scheduler(app: FastAPI) -> None:
     while True:
         try:
             now_ist = datetime.datetime.now(IST)
-            # 1. Every 30s: monitor open positions on live LTP
             open_pos = [p for p in app.state.engine.positions.values() if p.status == "OPEN"]
-            if open_pos:
+            open_spot = [p for p in app.state.spot_vault.positions.values() if p.status == "OPEN"]
+            if open_pos or open_spot:
                 tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
                 ltps = {s: t.ltp for s, t in tickers.items()}
-                await asyncio.to_thread(
-                    app.state.engine.monitor_open_positions, ltps, now_ist, app.state.store, app.state.tg
-                )
-            # 2. Every 5 min (24/7): run full 4-Engine + Boom + Catalyst cycle
-            if (now_ist.minute % 5 == 0) and last_scan_min != now_ist.minute and app.state.engine.config.enabled:
-                await asyncio.to_thread(_run_full_crypto_cycle, app, True)
+                usdt_inr = app.state.provider.get_usdt_inr()
+                if open_pos:
+                    await asyncio.to_thread(
+                        app.state.engine.monitor_open_positions, ltps, now_ist, app.state.store, app.state.tg
+                    )
+                if open_spot:
+                    fps = {
+                        p.symbol: await asyncio.to_thread(app.state.provider.get_footprint_cvd, p.symbol)
+                        for p in open_spot
+                    }
+                    await asyncio.to_thread(
+                        app.state.spot_vault.monitor_open_positions, ltps, fps, now_ist, app.state.store, app.state.tg, usdt_inr
+                    )
+            if (now_ist.minute % 5 == 0) and last_scan_min != now_ist.minute:
+                if app.state.engine.config.enabled:
+                    await asyncio.to_thread(_run_full_crypto_cycle, app, True)
+                if app.state.spot_vault.config.enabled:
+                    await asyncio.to_thread(_run_spot_vault_cycle, app, True)
                 last_scan_min = now_ist.minute
-            # 3. Every 15 min: refresh macro/catalyst news
             if (now_ist.minute % 15 == 0) and last_news_min != now_ist.minute:
                 await asyncio.to_thread(app.state.news_svc.refresh_news, True)
                 last_news_min = now_ist.minute
-            # 4. Daily midnight IST summary -> Telegram
             today = now_ist.strftime("%Y-%m-%d")
             if now_ist.hour == 0 and now_ist.minute <= 5 and last_summary_date != today:
                 tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
                 ltps = {s: t.ltp for s, t in tickers.items()}
-                led = app.state.engine.account_ledger(ltps, app.state.provider.get_usdt_inr())
+                usdt_inr = app.state.provider.get_usdt_inr()
+                led = app.state.engine.account_ledger(ltps, usdt_inr)
+                sled = app.state.spot_vault.vault_ledger(ltps, usdt_inr)
                 app.state.tg.send_alert(
                     f"DAILY CRYPTO SUMMARY — {today}",
-                    f"💼 Equity: ${led['total_equity_usdt']} (₹{led['total_equity_inr']})\n"
-                    f"💰 Net P&L: ${led['total_net_usdt']}\n"
-                    f"🏆 Accuracy: {led['accuracy_pct']}% ({led['wins']}W/{led['losses']}L) | PF {led['profit_factor']}\n"
-                    f"📂 Open: {led['open_count']} | Elite TG Today: {app.state.engine.tg_sent_today}/{app.state.engine.config.telegram_daily_cap}",
+                    f"💼 Perp Equity: ${led['total_equity_usdt']} (₹{led['total_equity_inr']}) | Net: ${led['total_net_usdt']}\n"
+                    f"🏆 Perp Accuracy: {led['accuracy_pct']}% ({led['wins']}W/{led['losses']}L) | PF {led['profit_factor']}\n"
+                    f"🪙 Spot Vault: ${sled['total_equity_usdt']} | Realised: ${sled['realised_net_usdt']} | Open: {sled['open_count']}\n"
+                    f"⭐ Elite TG Today: {app.state.engine.tg_sent_today}/{app.state.engine.config.telegram_daily_cap}",
                     now_ist.strftime("%d %b %Y, %I:%M %p IST"),
                 )
                 last_summary_date = today
@@ -303,10 +397,11 @@ async def _crypto_24_7_scheduler(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     cfg = get_settings()
-    app = FastAPI(title="TRADEIQ Crypto v1.0", version="1.0.0")
+    app = FastAPI(title="TRADEIQ Crypto Pro v1.0", version="1.1.0")
     app.state.cfg = cfg
     app.state.provider = MultiExchangeCryptoProvider(demo_mode=cfg.demo_mode)
     app.state.engine = CryptoPaperEngine()
+    app.state.spot_vault = SpotVaultEngine()
     app.state.store = CryptoSupabaseStore(cfg.supabase_url, cfg.supabase_key)
     app.state.news_svc = CryptoCatalystNewsService(demo_mode=cfg.demo_mode)
     app.state.tg = CryptoTelegramNotifier(cfg.telegram_bot_token, cfg.telegram_chat_id)
@@ -315,18 +410,19 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def on_startup():
-        # Permanently restore all saved crypto paper trades from Supabase on every restart/push!
         if app.state.store.is_configured():
             restored = await asyncio.to_thread(app.state.store.fetch_crypto_positions)
             for pos in restored:
                 app.state.engine.positions[pos.position_id] = pos
-            # Recompute today's Telegram Elite counter from persisted Supabase trades so 15-min sleep NEVER resets it to 0/6!
             today_ist = datetime.datetime.now(IST).strftime("%Y-%m-%d")
             app.state.engine.tg_sent_date = today_ist
             app.state.engine.tg_sent_today = sum(
                 1 for p in app.state.engine.positions.values()
                 if p.tier == "ELITE_TG" and (p.opened_at_ist or "").startswith(today_ist)
             )
+            spot_restored = await asyncio.to_thread(app.state.store.fetch_spot_positions)
+            for spos in spot_restored:
+                app.state.spot_vault.positions[spos.position_id] = spos
         await asyncio.to_thread(app.state.provider.refresh_all_tickers)
         await asyncio.to_thread(app.state.news_svc.refresh_news)
         if cfg.app_env != "test":
@@ -352,6 +448,7 @@ def create_app() -> FastAPI:
     async def crypto_overview(_owner: str = Depends(require_owner)):
         prov = app.state.provider
         eng = app.state.engine
+        vault = app.state.spot_vault
         tickers = await asyncio.to_thread(prov.refresh_all_tickers)
         usdt_inr = prov.get_usdt_inr()
         ltps = {s: t.ltp for s, t in tickers.items()}
@@ -363,6 +460,7 @@ def create_app() -> FastAPI:
             }
             for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT") if sym in tickers
         ]
+        sled = vault.vault_ledger(ltps, usdt_inr)
         return {
             "active_exchange": prov.active_exchange,
             "usdt_inr": str(usdt_inr),
@@ -380,9 +478,114 @@ def create_app() -> FastAPI:
             "last_scan_ist": eng.last_scan_ist,
             "scheduler_active": bool(app.state._scheduler_task),
             "ledger": eng.account_ledger(ltps, usdt_inr),
+            "spot_summary": {
+                "open_count": sled["open_count"],
+                "realised_net_usdt": sled["realised_net_usdt"],
+                "target_net_pct": str(vault.config.target_net_pct),
+                "enabled": vault.config.enabled,
+            },
             "boom_preview": eng.last_boom_items[:5],
             "recent_signals": eng.last_signals[:25],
         }
+
+    @app.get("/api/v1/spot/overview")
+    async def spot_overview(_owner: str = Depends(require_owner)):
+        prov = app.state.provider
+        vault = app.state.spot_vault
+        if not vault.last_radar:
+            await asyncio.to_thread(_run_spot_vault_cycle, app, False)
+        tickers = await asyncio.to_thread(prov.refresh_all_tickers)
+        usdt_inr = prov.get_usdt_inr()
+        ltps = {s: t.ltp for s, t in tickers.items()}
+        return {
+            "usdt_inr": str(usdt_inr),
+            "last_scan_ist": vault.last_scan_ist,
+            "config": vault.config.to_dict(),
+            "bluechips": list(BLUECHIP_SPOT_UNIVERSE),
+            "ledger": vault.vault_ledger(ltps, usdt_inr),
+            "radar": vault.last_radar,
+        }
+
+    @app.post("/api/v1/spot/scan")
+    async def spot_scan(payload: ScanRequest, _owner: str = Depends(require_owner)):
+        return await asyncio.to_thread(_run_spot_vault_cycle, app, payload.execute_entries)
+
+    @app.put("/api/v1/spot/config")
+    async def spot_update_config(payload: SpotConfigUpdateRequest, _owner: str = Depends(require_owner)):
+        data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+        return {"config": app.state.spot_vault.update_config(data)}
+
+    @app.post("/api/v1/spot/buy")
+    async def spot_manual_buy(payload: SpotBuyRequest, _owner: str = Depends(require_owner)):
+        sym = payload.symbol.strip().upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
+        t_obj = tickers.get(sym)
+        if not t_obj or t_obj.ltp <= 0:
+            raise HTTPException(status_code=404, detail=f"Live price not found for {sym}")
+        budget = Decimal(str(payload.budget_usdt)) if payload.budget_usdt else None
+        tgt = Decimal(str(payload.target_net_pct)) if payload.target_net_pct else None
+        pos = app.state.spot_vault.open_spot_position(
+            symbol=sym,
+            ltp=t_obj.ltp,
+            now_ist=datetime.datetime.now(IST),
+            mode="MANUAL_SPOT",
+            budget_usdt=budget,
+            target_net_pct=tgt,
+            single_shot=payload.single_shot,
+            rationale="Manual Spot Vault Buy • Zero Stop-Loss",
+            store=app.state.store,
+            tg=app.state.tg,
+            usdt_inr=app.state.provider.get_usdt_inr(),
+        )
+        return {
+            "opened": True,
+            "position_id": pos.position_id,
+            "symbol": pos.symbol,
+            "avg_entry_price": str(pos.avg_entry_price),
+            "net_target_price": str(pos.net_target_price),
+            "tranches_filled": pos.tranches_filled,
+        }
+
+    @app.post("/api/v1/spot/positions/{position_id}/dca")
+    async def spot_manual_dca(position_id: str, _owner: str = Depends(require_owner)):
+        pos = app.state.spot_vault.positions.get(position_id)
+        if not pos or pos.status != "OPEN":
+            raise HTTPException(status_code=404, detail="Open spot position not found")
+        if pos.tranches_filled >= pos.max_tranches:
+            raise HTTPException(status_code=400, detail="All DCA tranches already filled")
+        tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
+        ltp = tickers[pos.symbol].ltp if pos.symbol in tickers else pos.avg_entry_price
+        updated = app.state.spot_vault.add_dca_tranche(
+            position_id, ltp, datetime.datetime.now(IST), "MANUAL_DCA",
+            app.state.store, app.state.tg, app.state.provider.get_usdt_inr(),
+        )
+        return {
+            "updated": bool(updated),
+            "tranches_filled": updated.tranches_filled if updated else pos.tranches_filled,
+            "avg_entry_price": str(updated.avg_entry_price) if updated else str(pos.avg_entry_price),
+            "net_target_price": str(updated.net_target_price) if updated else str(pos.net_target_price),
+        }
+
+    @app.post("/api/v1/spot/positions/{position_id}/sell")
+    async def spot_manual_sell(position_id: str, _owner: str = Depends(require_owner)):
+        pos = app.state.spot_vault.positions.get(position_id)
+        if not pos or pos.status != "OPEN":
+            raise HTTPException(status_code=404, detail="Open spot position not found")
+        tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
+        ltp = tickers[pos.symbol].ltp if pos.symbol in tickers else pos.avg_entry_price
+        closed = app.state.spot_vault.close_spot_position(
+            position_id, ltp, "MANUAL_SPOT_SELL", datetime.datetime.now(IST),
+            app.state.store, app.state.tg, app.state.provider.get_usdt_inr(),
+        )
+        return {"closed": True, "net_pnl_usdt": str(closed.net_pnl_usdt) if closed else "0.00"}
+
+    @app.delete("/api/v1/spot/positions/{position_id}")
+    async def spot_delete(position_id: str, _owner: str = Depends(require_owner)):
+        app.state.spot_vault.positions.pop(position_id, None)
+        db_res = await asyncio.to_thread(app.state.store.delete_position, position_id)
+        return {"deleted": True, "position_id": position_id, "supabase": db_res}
 
     @app.post("/api/v1/crypto/scan")
     async def crypto_scan(payload: ScanRequest, _owner: str = Depends(require_owner)):
@@ -399,7 +602,6 @@ def create_app() -> FastAPI:
         items = await asyncio.to_thread(app.state.news_svc.refresh_news)
         return {"count": len(items), "items": items}
 
-
     @app.get("/api/v1/crypto/markets")
     async def crypto_markets(
         q: str = Query(""),
@@ -407,7 +609,6 @@ def create_app() -> FastAPI:
         limit: int = Query(100, ge=10, le=600),
         _owner: str = Depends(require_owner),
     ):
-        """Returns ALL live OKX USDT-Swap coins (534+) searchable by symbol and sortable by volume/gainers/losers."""
         tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
         ql = (q or "").strip().upper()
         rows = [t for t in tickers.values() if t.symbol.endswith("USDT") and (not ql or ql in t.symbol)]
@@ -467,7 +668,6 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/v1/paper/positions/{position_id}")
     async def delete_paper(position_id: str, _owner: str = Depends(require_owner)):
-        """Explicit manual owner-only delete — never called automatically."""
         app.state.engine.positions.pop(position_id, None)
         db_res = await asyncio.to_thread(app.state.store.delete_position, position_id)
         return {"deleted": True, "position_id": position_id, "supabase": db_res}
@@ -478,10 +678,11 @@ def create_app() -> FastAPI:
         return {
             "active_exchange": prov.active_exchange,
             "services": [
-                {"name": "Primary: Bybit v5 Public API", **prov.exchange_health["bybit"]},
-                {"name": "Failover 1: OKX v5 Public API", **prov.exchange_health["okx"]},
+                {"name": "Primary: OKX v5 Public API", **prov.exchange_health["okx"]},
+                {"name": "Failover 1: Bybit v5 Public API", **prov.exchange_health["bybit"]},
                 {"name": "Failover 2: Kraken US-Safe API", **prov.exchange_health["kraken"]},
                 {"name": "Supabase Permanent Crypto Store", "ok": app.state.store.is_configured(), "detail": app.state.store.status_summary()["table"]},
+                {"name": "Institutional Spot Buy Vault", "ok": True, "detail": f"3-Step Smart DCA • Net +{app.state.spot_vault.config.target_net_pct}% • Zero SL"},
                 {"name": "Telegram Elite Bot (5–7/day)", "ok": app.state.tg.enabled, "detail": f"{app.state.engine.tg_sent_today}/{app.state.engine.config.telegram_daily_cap} sent today"},
                 {"name": "OKX Free Tick Footprint & CVD", "ok": True, "detail": "Real-time Buy/Sell Delta + Shadow Sweep"},
                 {"name": "Gemini Stop-Hunt Trap Judge", "ok": True, "detail": "Gemini AI + Deterministic Trap Veto Active" if app.state.trap_judge.enabled else "Deterministic Trap Veto Active (Add GEMINI_API_KEYS for AI)"},
@@ -494,7 +695,7 @@ def create_app() -> FastAPI:
         return await asyncio.to_thread(
             app.state.tg.send_alert,
             "TEST CONNECTION",
-            "TRADEIQ Crypto v1.0 is live and connected! (Paper Mode Only)",
+            "TRADEIQ Crypto Pro v1.0 + Spot Vault is live and connected! (Paper Mode Only)",
             datetime.datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST"),
         )
 
