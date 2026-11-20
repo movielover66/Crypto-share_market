@@ -31,6 +31,7 @@ from .domain.crypto_engines import (
     evaluate_engine_1_breakout,
     evaluate_engine_2_donchian,
     evaluate_engine_3_funding_rsi2,
+    evaluate_engine_4_shadow_sweep,
 )
 from .domain.crypto_simulator import CryptoPaperEngine, IST
 from .providers.crypto_provider import (
@@ -39,7 +40,7 @@ from .providers.crypto_provider import (
     MultiExchangeCryptoProvider,
 )
 from .repositories.crypto_supabase_store import CryptoSupabaseStore
-from .services.crypto_news import CryptoCatalystNewsService, CryptoTelegramNotifier
+from .services.crypto_news import CryptoCatalystNewsService, CryptoTelegramNotifier, GeminiTrapJudge
 
 logger = logging.getLogger("tradeiq_crypto")
 STATIC_INDEX = Path(__file__).resolve().parent / "static" / "index.html"
@@ -100,12 +101,21 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
 
     signals: List[CryptoSignal] = []
     scan_syms = CORE_CRYPTO_UNIVERSE[:10]
+    trap_judge: GeminiTrapJudge = app.state.trap_judge
+    btc_chg = tickers["BTCUSDT"].change_24h_pct if "BTCUSDT" in tickers else Decimal("0")
     for sym in scan_syms:
         c15 = prov.get_candles(sym, "15m", 40)
+        c1h = prov.get_candles(sym, "1h", 35)
         c4h = prov.get_candles(sym, "4h", 80)
         depth = prov.get_orderbook_depth(sym)
+        fp = prov.get_footprint_cvd(sym)
+        crowd = prov.get_crowd_positioning(sym)
+        sym_chg = tickers[sym].change_24h_pct if sym in tickers else Decimal("0")
+        eff_chg = min(sym_chg, btc_chg) if sym_chg < 0 else max(sym_chg, btc_chg)
         if c15:
-            s1 = evaluate_engine_1_breakout(sym, c15, depth)
+            s1 = evaluate_engine_1_breakout(sym, c15, depth, c1h=c1h, footprint=fp, change_24h_pct=eff_chg)
+            # Engine 4: Institutional Stop-Hunt Liquidity Sweep + Footprint Absorption
+            signals.append(evaluate_engine_4_shadow_sweep(sym, c15, footprint=fp, crowd=crowd))
             # Catalyst Boost if breaking news + live volume confirmation
             if eng.config.enable_catalyst_radar and sym in bull_catalysts and s1.direction == "LONG" and s1.score >= 70:
                 s1 = CryptoSignal(
@@ -158,18 +168,37 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
 
     opened: List[Dict[str, Any]] = []
     if execute_entries and eng.config.enabled and not eng.kill_switch_active:
-        open_syms = {p.symbol for p in eng.positions.values() if p.status == "OPEN"}
+        open_pos_list = [p for p in eng.positions.values() if p.status == "OPEN"]
+        open_syms = {p.symbol for p in open_pos_list}
+        dir_counts = {
+            "LONG": sum(1 for p in open_pos_list if p.direction == "LONG"),
+            "SHORT": sum(1 for p in open_pos_list if p.direction == "SHORT"),
+        }
         for sig in signals:
             if len(open_syms) >= eng.config.max_open_positions:
                 break
             if sig.status != "CONFIRMED" or sig.symbol in open_syms or sig.symbol in risk_blocked:
                 continue
-            if sig.direction == "LONG" and not regime.allow_longs:
+            # Institutional Same-Direction Correlation Cap: Max 2 simultaneous LONGs or 2 SHORTs
+            if dir_counts.get(sig.direction, 0) >= 2 and sig.engine_code != "BOOM_RADAR":
                 continue
-            if sig.direction == "SHORT" and not regime.allow_shorts:
+            if sig.direction == "LONG" and not regime.allow_longs and sig.engine_code != "ENGINE_4_SHADOW_SWEEP":
+                continue
+            if sig.direction == "SHORT" and not regime.allow_shorts and sig.engine_code != "ENGINE_4_SHADOW_SWEEP":
+                continue
+            # Hybrid Gemini / Footprint Trap Veto Judge before executing!
+            fp_now = prov.get_footprint_cvd(sig.symbol)
+            sym_chg_now = float(tickers[sig.symbol].change_24h_pct) if sig.symbol in tickers else 0.0
+            verdict = trap_judge.evaluate_trade({
+                "symbol": sig.symbol, "direction": sig.direction, "engine_code": sig.engine_code,
+                "change_24h_pct": sym_chg_now, "footprint_delta_pct": fp_now.get("delta_pct", 0.0),
+                "cvd_bias": fp_now.get("cvd_bias", "NEUTRAL"), "score": sig.score,
+            })
+            if verdict.get("verdict") == "VETO_TRAP":
                 continue
             pos = eng.open_position(sig, now_ist, paper_store=store, telegram_notifier=tg, usdt_inr=usdt_inr)
             open_syms.add(pos.symbol)
+            dir_counts[pos.direction] = dir_counts.get(pos.direction, 0) + 1
             opened.append({"position_id": pos.position_id, "symbol": pos.symbol, "tier": pos.tier, "engine": pos.engine_code})
 
     return {
@@ -238,6 +267,7 @@ def create_app() -> FastAPI:
     app.state.store = CryptoSupabaseStore(cfg.supabase_url, cfg.supabase_key)
     app.state.news_svc = CryptoCatalystNewsService(demo_mode=cfg.demo_mode)
     app.state.tg = CryptoTelegramNotifier(cfg.telegram_bot_token, cfg.telegram_chat_id)
+    app.state.trap_judge = GeminiTrapJudge(cfg.gemini_api_keys)
     app.state._scheduler_task = None
 
     @app.on_event("startup")
@@ -364,6 +394,8 @@ def create_app() -> FastAPI:
                 {"name": "Failover 2: Kraken US-Safe API", **prov.exchange_health["kraken"]},
                 {"name": "Supabase Permanent Crypto Store", "ok": app.state.store.is_configured(), "detail": app.state.store.status_summary()["table"]},
                 {"name": "Telegram Elite Bot (5–7/day)", "ok": app.state.tg.enabled, "detail": f"{app.state.engine.tg_sent_today}/{app.state.engine.config.telegram_daily_cap} sent today"},
+                {"name": "OKX Free Tick Footprint & CVD", "ok": True, "detail": "Real-time Buy/Sell Delta + Shadow Sweep"},
+                {"name": "Gemini Stop-Hunt Trap Judge", "ok": True, "detail": "Gemini AI + Deterministic Trap Veto Active" if app.state.trap_judge.enabled else "Deterministic Trap Veto Active (Add GEMINI_API_KEYS for AI)"},
                 {"name": "24/7 Autonomous Scheduler", "ok": bool(app.state._scheduler_task) or cfg.app_env == "test", "detail": "5m Scan • 30s Live Guard"},
             ],
         }
