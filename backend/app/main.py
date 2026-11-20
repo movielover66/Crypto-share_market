@@ -277,6 +277,13 @@ def create_app() -> FastAPI:
             restored = await asyncio.to_thread(app.state.store.fetch_crypto_positions)
             for pos in restored:
                 app.state.engine.positions[pos.position_id] = pos
+            # Recompute today's Telegram Elite counter from persisted Supabase trades so 15-min sleep NEVER resets it to 0/6!
+            today_ist = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+            app.state.engine.tg_sent_date = today_ist
+            app.state.engine.tg_sent_today = sum(
+                1 for p in app.state.engine.positions.values()
+                if p.tier == "ELITE_TG" and (p.opened_at_ist or "").startswith(today_ist)
+            )
         await asyncio.to_thread(app.state.provider.refresh_all_tickers)
         await asyncio.to_thread(app.state.news_svc.refresh_news)
         if cfg.app_env != "test":
