@@ -186,22 +186,24 @@ class CryptoPaperEngine:
 
         if is_elite and telegram_notifier and getattr(telegram_notifier, "enabled", False):
             self.tg_sent_today += 1
-            inr_entry = (fill * usdt_inr).quantize(Decimal("0.01"))
-            dir_icon = "⭐ ELITE CRYPTO LONG" if pos.direction == "LONG" else "⭐ ELITE CRYPTO SHORT"
-            telegram_notifier.send_alert(
-                f"{dir_icon} ({pos.leverage}x) — {pos.symbol}",
-                (
-                    f"📌 Type: {pos.horizon_bucket.upper()} (Score {pos.score}/100)\n"
-                    f"⏱ Hold Timeframe: {pos.hold_horizon}\n"
-                    f"⚙️ Engine: {pos.engine_code}\n\n"
-                    f"💰 Entry: ${pos.entry_fill_price} (₹{inr_entry})  |  Margin: ${pos.margin_usdt}\n"
-                    f"🛡️ Stop-Loss: ${pos.stop_loss}\n"
-                    f"🎯 Target: ${pos.target_price}\n\n"
-                    f"📊 Why: {pos.rationale[:160]}\n"
-                    f"✈️ Elite Alert #{self.tg_sent_today} of {self.config.telegram_daily_cap} today"
-                ),
-                now_ist.strftime("%d %b %Y, %I:%M %p IST"),
-            )
+            ts_str = now_ist.strftime("%I:%M %p IST")
+            if is_boom and hasattr(telegram_notifier, "send_html"):
+                msg = (
+                    f"🟣🚀 <b>BOOM 1x</b> • <code>{pos.symbol}</code>\n"
+                    f"Entry <code>${pos.entry_fill_price}</code> | TP <code>${pos.target_price}</code> | SL <code>${pos.stop_loss}</code>\n"
+                    f"<i>Score {pos.score}/100 • Margin ${pos.margin_usdt} • Alert #{self.tg_sent_today}/{self.config.telegram_daily_cap} • {ts_str}</i>"
+                )
+                telegram_notifier.send_html(msg, btn_label="🚀 Open Boom Radar")
+            elif hasattr(telegram_notifier, "send_html"):
+                dot = "🟢" if pos.direction == "LONG" else "🔴"
+                msg = (
+                    f"{dot} <b>{pos.direction} {pos.leverage}x</b> • <code>{pos.symbol}</code>\n"
+                    f"Entry <code>${pos.entry_fill_price}</code> | TP <code>${pos.target_price}</code> | SL <code>${pos.stop_loss}</code>\n"
+                    f"<i>{pos.horizon_bucket.upper()} • Score {pos.score}/100 • Margin ${pos.margin_usdt} • #{self.tg_sent_today}/{self.config.telegram_daily_cap} • {ts_str}</i>"
+                )
+                telegram_notifier.send_html(msg, btn_label="📊 Open Crypto Desk")
+            else:
+                telegram_notifier.send_alert(f"{pos.direction} — {pos.symbol}", f"Entry ${pos.entry_fill_price}", ts_str)
         return pos
 
     def close_position(
@@ -253,19 +255,45 @@ class CryptoPaperEngine:
             except Exception:
                 pass
 
-        if pos.tier == "ELITE_TG" and telegram_notifier and getattr(telegram_notifier, "enabled", False):
+        # 100% Guaranteed Category-Colored Dark PnL Image Card on EVERY Closed Trade (Target Hit / SL Hit / Boom Exit)!
+        if telegram_notifier and getattr(telegram_notifier, "enabled", False):
             sign = "+" if net > 0 else ""
-            badge = "✅ WIN" if pos.outcome == "WIN" else ("❌ LOSS" if pos.outcome == "LOSS" else "⚖️ BREAKEVEN")
-            telegram_notifier.send_alert(
-                f"{'🎯' if reason == 'TARGET_HIT' else '🛡️'} {reason.replace('_', ' ')} — {pos.symbol}",
-                (
-                    f"⏱ Hold Timeframe: {pos.hold_horizon}\n"
-                    f"⚙️ Engine: {pos.engine_code}\n\n"
-                    f"💵 Exit: ${pos.exit_fill_price}\n"
-                    f"💰 Net P&L: {sign}${pos.net_pnl_usdt} ({badge})"
-                ),
-                now_ist.strftime("%d %b %Y, %I:%M %p IST"),
+            is_boom_pos = pos.horizon_bucket == "boom" or pos.engine_code == "BOOM_RADAR"
+            is_win = net >= 0
+            pct_roi = ((net / pos.margin_usdt) * Decimal("100")).quantize(Decimal("0.01")) if pos.margin_usdt > 0 else Decimal("0.00")
+            inr_est = (net * Decimal("85.20")).quantize(Decimal("1"))
+            ts_str = now_ist.strftime("%d %b • %I:%M %p IST")
+            if is_boom_pos:
+                cat = "BOOM_WIN" if is_win else "BOOM_LOSS"
+                badge = "BOOM TARGET HIT" if is_win else "BOOM SL HIT"
+                icon = "🟣🚀"
+                btn = "🚀 Open Boom Radar"
+            else:
+                cat = "PERP_WIN" if is_win else "PERP_LOSS"
+                badge = "TARGET HIT" if reason == "TARGET_HIT" else ("STOP-LOSS HIT" if "SL" in reason else reason.replace("_", " "))
+                icon = "🟢🏆" if is_win else "🔴🛑"
+                btn = "📊 Open Crypto Desk"
+            cap = (
+                f"{icon} <b>{badge}</b> • <code>{pos.symbol}</code>\n"
+                f"Exit <code>${pos.exit_fill_price}</code> | Net <b>{sign}${pos.net_pnl_usdt}</b> ({sign}{pct_roi}% • ₹{inr_est})"
             )
+            if hasattr(telegram_notifier, "send_pnl_card"):
+                telegram_notifier.send_pnl_card(
+                    category=cat,
+                    badge_text=badge,
+                    symbol=pos.symbol,
+                    sub_pill=f"{'BOOM 1x' if is_boom_pos else f'{pos.direction} {pos.leverage}x'}",
+                    big_pnl=f"{sign}${pos.net_pnl_usdt}",
+                    sub_pnl=f"{sign}{pct_roi}%  |  {sign}Rs {abs(inr_est)} Net",
+                    col1=("ENTRY", f"${pos.entry_fill_price}"),
+                    col2=("EXIT", f"${pos.exit_fill_price}"),
+                    col3=("STOP-LOSS", f"${pos.stop_loss}"),
+                    caption_html=cap,
+                    ts_label=ts_str,
+                    btn_label=btn,
+                )
+            else:
+                telegram_notifier.send_alert(f"{badge} — {pos.symbol}", f"Net {sign}${pos.net_pnl_usdt}", ts_str)
         return pos
 
     def monitor_open_positions(
