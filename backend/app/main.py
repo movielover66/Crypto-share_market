@@ -391,16 +391,55 @@ def create_app() -> FastAPI:
         items = await asyncio.to_thread(app.state.news_svc.refresh_news)
         return {"count": len(items), "items": items}
 
+
+    @app.get("/api/v1/crypto/markets")
+    async def crypto_markets(
+        q: str = Query(""),
+        sort: str = Query("volume"),
+        limit: int = Query(100, ge=10, le=600),
+        _owner: str = Depends(require_owner),
+    ):
+        """Returns ALL live OKX USDT-Swap coins (534+) searchable by symbol and sortable by volume/gainers/losers."""
+        tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
+        ql = (q or "").strip().upper()
+        rows = [t for t in tickers.values() if t.symbol.endswith("USDT") and (not ql or ql in t.symbol)]
+        if sort == "gainers":
+            rows.sort(key=lambda t: t.change_24h_pct, reverse=True)
+        elif sort == "losers":
+            rows.sort(key=lambda t: t.change_24h_pct)
+        else:
+            rows.sort(key=lambda t: t.volume_24h_usdt, reverse=True)
+        return {
+            "total_market_coins": len(tickers),
+            "filtered_count": len(rows),
+            "usdt_inr": str(app.state.provider.get_usdt_inr()),
+            "items": [
+                {
+                    "symbol": t.symbol,
+                    "ltp": str(t.ltp),
+                    "change_24h_pct": str(t.change_24h_pct),
+                    "volume_24h_usdt": str(t.volume_24h_usdt),
+                    "funding_pct": str((t.funding_rate * Decimal("100")).quantize(Decimal("0.001"))),
+                }
+                for t in rows[:limit]
+            ],
+        }
+
     @app.get("/api/v1/crypto/chart/{symbol}")
-    async def crypto_chart(symbol: str, interval: str = Query("15m"), _owner: str = Depends(require_owner)):
+    async def crypto_chart(symbol: str, interval: str = Query("1m"), _owner: str = Depends(require_owner)):
         sym = symbol.upper()
-        candles = await asyncio.to_thread(app.state.provider.get_candles, sym, interval, 60)
+        candles = await asyncio.to_thread(app.state.provider.get_candles, sym, interval, 100)
         depth = await asyncio.to_thread(app.state.provider.get_orderbook_depth, sym)
+        fp = await asyncio.to_thread(app.state.provider.get_footprint_cvd, sym)
+        t_obj = app.state.provider.ticker_cache.get(sym)
         return {
             "symbol": sym,
             "interval": interval,
+            "ltp": str(t_obj.ltp) if t_obj else (str(candles[-1].close) if candles else "0"),
+            "change_24h_pct": str(t_obj.change_24h_pct) if t_obj else "0.00",
             "candles": [{"ts_ms": c.ts_ms, "o": str(c.open), "h": str(c.high), "l": str(c.low), "c": str(c.close), "v": str(c.volume)} for c in candles],
             "depth": depth,
+            "footprint": fp,
         }
 
     @app.put("/api/v1/crypto/config")
