@@ -100,24 +100,41 @@
     let volSeriesRef = null;
     let okxPublicWs = null;
     let okxCandleWs = null;
+    let okxPingTimer = null;
+    let okxReconnectTimer = null;
+    let lastBarRef = null;
     let liveFpBuy = 0;
     let liveFpSell = 0;
     let lastLivePx = 0;
+    let chartStreamActive = false;
     let ws = null;
 
     function closeExchangeChartSockets() {
-      try { if (okxPublicWs) okxPublicWs.close(); } catch {}
-      try { if (okxCandleWs) okxCandleWs.close(); } catch {}
+      chartStreamActive = false;
+      if (okxPingTimer) { clearInterval(okxPingTimer); okxPingTimer = null; }
+      if (okxReconnectTimer) { clearTimeout(okxReconnectTimer); okxReconnectTimer = null; }
+      try { if (okxPublicWs) { okxPublicWs.onclose = null; okxPublicWs.close(); } } catch {}
+      try { if (okxCandleWs) { okxCandleWs.onclose = null; okxCandleWs.close(); } } catch {}
       okxPublicWs = null;
       okxCandleWs = null;
     }
 
     function connectOkxDirectMsStream(sym, tf) {
       closeExchangeChartSockets();
+      chartStreamActive = true;
       const instId = sym.endsWith('USDT') ? sym.slice(0, -4) + '-USDT-SWAP' : sym;
       const okxBar = { '1m':'candle1m', '5m':'candle5m', '15m':'candle15m', '1h':'candle1H', '4h':'candle4H', '1d':'candle1D' }[tf] || 'candle1m';
       liveFpBuy = 0;
       liveFpSell = 0;
+
+      const scheduleReconnect = () => {
+        if (!chartStreamActive || section !== 'chart') return;
+        if (okxReconnectTimer) return;
+        okxReconnectTimer = setTimeout(() => {
+          okxReconnectTimer = null;
+          if (chartStreamActive && section === 'chart') connectOkxDirectMsStream(sym, tf);
+        }, 1200);
+      };
 
       // 1. Direct OKX Public WS: Millisecond Tickers + 5-Level L2 Orderbook (books5) + Tick-by-Tick Trades (Footprint CVD)
       try {
@@ -132,7 +149,10 @@
             ]
           }));
         };
+        okxPublicWs.onclose = scheduleReconnect;
+        okxPublicWs.onerror = () => { try { okxPublicWs.close(); } catch {} };
         okxPublicWs.onmessage = (ev) => {
+          if (ev.data === 'pong') return;
           try {
             const msg = JSON.parse(ev.data);
             const ch = msg?.arg?.channel;
@@ -153,6 +173,13 @@
               if (chgEl) {
                 chgEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
                 chgEl.style.color = pct >= 0 ? '#00E676' : '#FF3B5C';
+              }
+              // Keep live candle moving smoothly on EVERY ticker millisecond tick!
+              if (candleSeriesRef && lastBarRef && Number.isFinite(px) && px > 0) {
+                lastBarRef.close = px;
+                if (px > lastBarRef.high) lastBarRef.high = px;
+                if (px < lastBarRef.low) lastBarRef.low = px;
+                candleSeriesRef.update(lastBarRef);
               }
             } else if (ch === 'books5') {
               const bids = d.bids || [];
@@ -175,6 +202,8 @@
                 if (tr.side === 'buy') liveFpBuy += val;
                 else liveFpSell += val;
               }
+              // Keep rolling window responsive instead of freezing at huge cumulative totals
+              if ((liveFpBuy + liveFpSell) > 5000000) { liveFpBuy *= 0.5; liveFpSell *= 0.5; }
               const tot = liveFpBuy + liveFpSell;
               if (tot > 0) {
                 const dp = (((liveFpBuy - liveFpSell) / tot) * 100).toFixed(1);
@@ -183,7 +212,7 @@
                 if (fpBox) {
                   fpBox.innerHTML = `<div class="flex items-center justify-between flex-wrap gap-2">
                     <div><div class="text-sm font-extrabold text-white">Live Millisecond Tick Footprint &amp; CVD (${sym})</div>
-                    <div class="text-[11px] text-slate-400">Direct OKX exchange tick stream • Real-time Buy vs Sell aggressor volume</div></div>
+                    <div class="text-[11px] text-slate-400">Direct OKX exchange tick stream • Keep-Alive Ping ON ⚡</div></div>
                     <span class="text-xs font-extrabold mono px-2.5 py-1 rounded-lg ${Number(dp)>=0?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${bias} (${Number(dp)>=0?'+':''}${dp}%)</span>
                   </div>`;
                 }
@@ -202,18 +231,28 @@
             args: [{ channel: okxBar, instId }]
           }));
         };
+        okxCandleWs.onclose = scheduleReconnect;
+        okxCandleWs.onerror = () => { try { okxCandleWs.close(); } catch {} };
         okxCandleWs.onmessage = (ev) => {
+          if (ev.data === 'pong') return;
           try {
             const msg = JSON.parse(ev.data);
             const row = msg?.data?.[0];
             if (!row || !candleSeriesRef || !volSeriesRef) return;
             const ts = Math.floor(Number(row[0]) / 1000);
             const o = Number(row[1]), h = Number(row[2]), l = Number(row[3]), cl = Number(row[4]), v = Number(row[5]);
-            candleSeriesRef.update({ time: ts, open: o, high: h, low: l, close: cl });
+            lastBarRef = { time: ts, open: o, high: h, low: l, close: cl };
+            candleSeriesRef.update(lastBarRef);
             volSeriesRef.update({ time: ts, value: v, color: cl >= o ? 'rgba(0,230,118,0.32)' : 'rgba(255,59,92,0.32)' });
           } catch {}
         };
       } catch {}
+
+      // 3. Mandatory OKX 18-second "ping" heartbeat (prevents 30-second silent disconnect freeze!)
+      okxPingTimer = setInterval(() => {
+        try { if (okxPublicWs && okxPublicWs.readyState === 1) okxPublicWs.send('ping'); } catch {}
+        try { if (okxCandleWs && okxCandleWs.readyState === 1) okxCandleWs.send('ping'); } catch {}
+      }, 18000);
     }
 
     function showLogin(msg) {
@@ -425,6 +464,7 @@
         volSeries.setData(vData);
         candleSeriesRef = candleSeries;
         volSeriesRef = volSeries;
+        lastBarRef = cData.length ? Object.assign({}, cData[cData.length - 1]) : null;
         tvChart.timeScale().fitContent();
         connectOkxDirectMsStream(r.symbol, chartTf);
       }
