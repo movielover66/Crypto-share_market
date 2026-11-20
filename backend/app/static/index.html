@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TRADEIQ Crypto Pro v1.0 — 24/7 USDT-M Paper Desk</title>
+  <title>TRADEIQ Crypto Pro v1.0 — 24/7 USDT-M &amp; Spot Vault</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -23,7 +23,7 @@
     <div class="card w-full max-w-sm p-6 space-y-4">
       <div>
         <div class="text-xl font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs px-2 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700]">CRYPTO PRO</span></div>
-        <p class="text-xs text-slate-400 mt-1">Owner Password Required • 534+ Live Coins • Paper Only</p>
+        <p class="text-xs text-slate-400 mt-1">Owner Password Required • 534+ Live Coins • Spot Vault</p>
       </div>
       <div id="login-err" class="hidden text-xs text-[#FF3B5C] bg-[#FF3B5C]/10 border border-[#FF3B5C]/30 rounded-xl px-3 py-2"></div>
       <input id="login-pwd" type="password" placeholder="Enter Owner Password" class="w-full px-3.5 py-2.5 rounded-xl bg-[#090D16] border border-[#24324A] text-white text-sm focus:outline-none focus:border-[#00E676]" />
@@ -91,6 +91,7 @@
     let marketSearch = '';
     let marketSort = 'volume';
     let overview = null;
+    let spotData = null;
     let marketsData = null;
     let boomData = [];
     let catalystData = [];
@@ -136,7 +137,6 @@
         }, 1200);
       };
 
-      // 1. Direct OKX Public WS: Millisecond Tickers + 5-Level L2 Orderbook (books5) + Tick-by-Tick Trades (Footprint CVD)
       try {
         okxPublicWs = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
         okxPublicWs.onopen = () => {
@@ -174,7 +174,6 @@
                 chgEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
                 chgEl.style.color = pct >= 0 ? '#00E676' : '#FF3B5C';
               }
-              // Keep live candle moving smoothly on EVERY ticker millisecond tick!
               if (candleSeriesRef && lastBarRef && Number.isFinite(px) && px > 0) {
                 lastBarRef.close = px;
                 if (px > lastBarRef.high) lastBarRef.high = px;
@@ -202,7 +201,6 @@
                 if (tr.side === 'buy') liveFpBuy += val;
                 else liveFpSell += val;
               }
-              // Keep rolling window responsive instead of freezing at huge cumulative totals
               if ((liveFpBuy + liveFpSell) > 5000000) { liveFpBuy *= 0.5; liveFpSell *= 0.5; }
               const tot = liveFpBuy + liveFpSell;
               if (tot > 0) {
@@ -222,7 +220,6 @@
         };
       } catch {}
 
-      // 2. Direct OKX Business WS: Millisecond Live Candlestick + Volume Updates on TradingView Chart!
       try {
         okxCandleWs = new WebSocket('wss://ws.okx.com:8443/ws/v5/business');
         okxCandleWs.onopen = () => {
@@ -248,7 +245,6 @@
         };
       } catch {}
 
-      // 3. Mandatory OKX 18-second "ping" heartbeat (prevents 30-second silent disconnect freeze!)
       okxPingTimer = setInterval(() => {
         try { if (okxPublicWs && okxPublicWs.readyState === 1) okxPublicWs.send('ping'); } catch {}
         try { if (okxCandleWs && okxCandleWs.readyState === 1) okxCandleWs.send('ping'); } catch {}
@@ -269,7 +265,7 @@
     function showToast(m) {
       const t = document.getElementById('toast');
       t.textContent = m; t.classList.remove('hidden');
-      clearTimeout(t._tm); t._tm = setTimeout(() => t.classList.add('hidden'), 3000);
+      clearTimeout(t._tm); t._tm = setTimeout(() => t.classList.add('hidden'), 3200);
     }
 
     async function apiFetch(path, opts = {}) {
@@ -314,6 +310,7 @@
     function renderNav() {
       const items = [
         { id: 'desk', icon: '⚡', t: 'Crypto Trading Desk', s: 'Intraday • Reversion • Trend • Boom' },
+        { id: 'spot', icon: '🪙', t: 'Spot Buy Vault (No SL)', s: '3-Step Smart DCA • Blue-Chip Bounce' },
         { id: 'markets', icon: '🌐', t: 'All 534+ Live Markets', s: 'Search & Sort Full OKX Exchange' },
         { id: 'chart', icon: '🕯️', t: 'Live Candlestick & Depth', s: '1m–1d TradingView + Footprint CVD' },
         { id: 'boom', icon: '🚀', t: 'Daily Boom Radar', s: 'Dynamic 534-Coin Explosive Movers' },
@@ -332,6 +329,7 @@
       section = s;
       closeExchangeChartSockets();
       document.getElementById('drawer').classList.add('hidden');
+      if (s === 'spot') { spotData = await apiFetch('/api/v1/spot/overview'); }
       if (s === 'markets') await loadMarkets();
       if (s === 'boom') { const r = await apiFetch('/api/v1/crypto/boom'); boomData = r.items || []; }
       if (s === 'catalyst') { const r = await apiFetch('/api/v1/crypto/catalysts'); catalystData = r.items || []; }
@@ -352,6 +350,64 @@
     window.setLabF = (f) => { labFilter = f; render(); };
     window.openChart = (sym) => { chartSym = sym.toUpperCase().endsWith('USDT') ? sym.toUpperCase() : (sym.toUpperCase() + 'USDT'); goSec('chart'); };
     window.setTf = (tf) => { chartTf = tf; loadChart(true); };
+
+    window.scanSpotVault = async () => {
+      showToast('Scanning Top 10 Blue-Chips (4-Point Bounce Check)...');
+      const r = await apiFetch('/api/v1/spot/scan', { method: 'POST', body: JSON.stringify({ execute_entries: true }) });
+      showToast(`Blue-Chips: ${r.buy_ready_count} Buy Ready • ${r.opened_count} Opened`);
+      spotData = await apiFetch('/api/v1/spot/overview');
+      render();
+    };
+    window.saveSpotCfg = async () => {
+      await apiFetch('/api/v1/spot/config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          per_coin_budget_usdt: Number(document.getElementById('sp-budget').value),
+          target_net_pct: Number(document.getElementById('sp-tgt').value),
+          max_active_coins: Number(document.getElementById('sp-max').value),
+          enabled: document.getElementById('sp-auto').value === 'true'
+        })
+      });
+      showToast('Spot Vault settings saved');
+      spotData = await apiFetch('/api/v1/spot/overview');
+      await refreshCore();
+    };
+    window.quickSpotBuy = async (symOverride) => {
+      const sym = symOverride || (document.getElementById('sp-buy-sym')?.value || '').trim().toUpperCase();
+      if (!sym) { showToast('Enter a coin symbol (e.g. BTC, ETH, SOL)'); return; }
+      const budget = Number(document.getElementById('sp-buy-amt')?.value || spotData?.config?.per_coin_budget_usdt || 120);
+      const tgt = Number(document.getElementById('sp-buy-tgt')?.value || spotData?.config?.target_net_pct || 5.0);
+      const single = (document.getElementById('sp-buy-mode')?.value === 'single');
+      const r = await apiFetch('/api/v1/spot/buy', {
+        method: 'POST',
+        body: JSON.stringify({ symbol: sym, budget_usdt: budget, target_net_pct: tgt, single_shot: single })
+      });
+      if (r.opened) {
+        showToast(`🪙 Spot Bought ${r.symbol} @ $${r.avg_entry_price} (Target $${r.net_target_price})`);
+        spotData = await apiFetch('/api/v1/spot/overview');
+        render();
+      } else {
+        showToast(r.detail || 'Could not execute Spot Buy');
+      }
+    };
+    window.addSpotDca = async (pid) => {
+      const r = await apiFetch('/api/v1/spot/positions/' + encodeURIComponent(pid) + '/dca', { method: 'POST', body: '{}' });
+      showToast(r.updated ? `DCA #${r.tranches_filled} filled • Avg $${r.avg_entry_price}` : (r.detail || 'DCA unavailable'));
+      spotData = await apiFetch('/api/v1/spot/overview');
+      render();
+    };
+    window.sellSpotPos = async (pid) => {
+      const r = await apiFetch('/api/v1/spot/positions/' + encodeURIComponent(pid) + '/sell', { method: 'POST', body: '{}' });
+      showToast(`Spot Sold • Net P&L: ${fmtU(r.net_pnl_usdt)}`);
+      spotData = await apiFetch('/api/v1/spot/overview');
+      await refreshCore();
+    };
+    window.delSpotPos = async (pid) => {
+      await apiFetch('/api/v1/spot/positions/' + encodeURIComponent(pid), { method: 'DELETE' });
+      showToast('Deleted Spot record from Supabase');
+      spotData = await apiFetch('/api/v1/spot/overview');
+      render();
+    };
 
     window.closePos = async (pid) => {
       await apiFetch('/api/v1/paper/positions/' + encodeURIComponent(pid) + '/close', { method: 'POST', body: '{}' });
@@ -412,11 +468,7 @@
 
             <div id="tv-candle-box" class="w-full h-80 rounded-xl overflow-hidden border border-[#1B2436] bg-[#070B12]"></div>
           </div>
-
-          <!-- Live OKX Tick Footprint / CVD Strip -->
           <div id="fp-box" class="card p-4"></div>
-
-          <!-- Live 5-Level L2 Orderbook Depth -->
           <div id="ob-box" class="card p-4"></div>
         `;
       } else {
@@ -424,7 +476,6 @@
         if (ltpEl) ltpEl.textContent = '$' + r.ltp;
       }
 
-      // Render TradingView Lightweight Candlesticks + Volume
       const box = document.getElementById('tv-candle-box');
       if (box && window.LightweightCharts && c.length > 0) {
         box.innerHTML = '';
@@ -444,9 +495,7 @@
           wickUpColor: '#00E676', wickDownColor: '#FF3B5C',
           priceFormat: { type: 'price', precision, minMove: Number((1 / Math.pow(10, precision)).toFixed(precision)) },
         });
-        const volSeries = tvChart.addHistogramSeries({
-          priceFormat: { type: 'volume' }, priceScaleId: '',
-        });
+        const volSeries = tvChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '' });
         tvChart.priceScale('').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
 
         const seenTs = new Set();
@@ -469,22 +518,16 @@
         connectOkxDirectMsStream(r.symbol, chartTf);
       }
 
-      // Render Footprint CVD
       const fpBox = document.getElementById('fp-box');
       if (fpBox) {
         fpBox.innerHTML = `
           <div class="flex items-center justify-between flex-wrap gap-2">
-            <div>
-              <div class="text-sm font-extrabold text-white">OKX Tick Footprint &amp; CVD (${r.symbol})</div>
-              <div class="text-[11px] text-slate-400">Live aggressor Buy vs Sell volume from last 100 exchange ticks</div>
-            </div>
-            <span class="text-xs font-extrabold mono px-2.5 py-1 rounded-lg ${dpct>=0?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">
-              ${fp.cvd_bias || 'NEUTRAL'} (${dpct>=0?'+':''}${dpct}%)
-            </span>
+            <div><div class="text-sm font-extrabold text-white">OKX Tick Footprint &amp; CVD (${r.symbol})</div>
+            <div class="text-[11px] text-slate-400">Live aggressor Buy vs Sell volume from last 100 exchange ticks</div></div>
+            <span class="text-xs font-extrabold mono px-2.5 py-1 rounded-lg ${dpct>=0?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${fp.cvd_bias || 'NEUTRAL'} (${dpct>=0?'+':''}${dpct}%)</span>
           </div>`;
       }
 
-      // Render L2 Orderbook Depth
       const obBox = document.getElementById('ob-box');
       if (obBox) {
         obBox.innerHTML = `
@@ -502,6 +545,7 @@
       const led = overview?.ledger || {};
       const openPos = led.open_positions_live || [];
       const closed = led.closed_trades || [];
+      const spSum = overview?.spot_summary || { open_count: 0, realised_net_usdt: '0.00', target_net_pct: '5.0' };
       const el = document.getElementById('content');
 
       if (section === 'desk') {
@@ -516,7 +560,8 @@
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Telegram Elite Today</div><div class="text-lg font-extrabold text-[#F5B700] mono mt-1">${overview?.tg_sent_today || 0} / ${overview?.tg_daily_cap || 6}</div><div class="text-[10px] text-slate-400">A+ Trades Sent</div></div>
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Backend Lab Accuracy</div><div class="text-lg font-extrabold text-[#00E676] mono mt-1">${led.accuracy_pct || '0.0'}%</div><div class="text-[10px] text-slate-400">${led.wins||0}W/${led.losses||0}L • ${openPos.length} Open</div></div>
           </div>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <button onclick="goSec('spot')" class="card p-3.5 border-[#00E676]/45 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">🪙 Spot Buy Vault</div><div class="text-[11px] text-slate-400 mt-0.5">No-SL • 3-Step DCA • +${spSum.target_net_pct}% (${spSum.open_count} Open)</div></div><span class="text-xs font-bold text-[#00E676]">Open →</span></button>
             <button onclick="goSec('markets')" class="card p-3.5 border-[#00D4FF]/35 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">🌐 All 534+ Coins</div><div class="text-[11px] text-slate-400 mt-0.5">Search &amp; open 1m–1d candles</div></div><span class="text-xs font-bold text-[#00D4FF]">Open →</span></button>
             <button onclick="goSec('boom')" class="card p-3.5 border-[#A855F7]/40 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">🚀 Daily Boom Radar</div><div class="text-[11px] text-slate-400 mt-0.5">534-coin dynamic movers (1x)</div></div><span class="text-xs font-bold text-[#D8B4FE]">Open →</span></button>
             <button onclick="goSec('catalyst')" class="card p-3.5 border-[#F5B700]/35 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">⚡ Macro Catalyst</div><div class="text-[11px] text-slate-400 mt-0.5">Musk / Trump / Fed / SEC</div></div><span class="text-xs font-bold text-[#F5B700]">Open →</span></button>
@@ -545,6 +590,114 @@
                 <div class="mt-3 flex gap-2"><button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] text-xs font-bold text-white">🕯️ Live Chart</button><button onclick="closePos('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#FF3B5C]/15 text-[#FF3B5C] text-xs font-bold">Exit</button></div>
               </div>`;
             }).join('')}
+          </div>`;
+      } else if (section === 'spot') {
+        const sl = spotData?.ledger || {};
+        const scfg = spotData?.config || {};
+        const sOpen = sl.open_positions || [];
+        const sClosed = sl.closed_trades || [];
+        const radar = spotData?.radar || [];
+        const realU = Number(sl.realised_net_usdt || 0);
+        el.innerHTML = `
+          <div class="card p-4 border-[#00E676]/40 flex flex-wrap justify-between items-center gap-2">
+            <div>
+              <h2 class="text-base font-extrabold text-white">🪙 Institutional Spot Buy Vault (Zero Stop-Loss • 3-Step Smart DCA)</h2>
+              <p class="text-xs text-slate-400 mt-0.5">Separate CRYPTO_SPOT wallet in Supabase • 4-Point Bounce Check on Top 10 Blue-Chips • Exact 0.20% Spot fee adjusted</p>
+            </div>
+            <button onclick="scanSpotVault()" class="px-3.5 py-2 rounded-xl bg-[#00E676] text-[#04120B] font-extrabold text-xs">Scan Blue-Chips</button>
+          </div>
+
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Spot Vault Equity</div><div class="text-lg font-extrabold text-white mono mt-1">${fmtU(sl.total_equity_usdt || 1000)}</div><div class="text-[10px] text-[#F5B700] mono">≈ ${fmtR(sl.total_equity_inr || 85200)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Deployed / Free</div><div class="text-lg font-extrabold text-[#00D4FF] mono mt-1">${fmtU(sl.deployed_usdt || 0)}</div><div class="text-[10px] text-slate-400 mono">Free: ${fmtU(sl.free_usdt || 1000)}</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Realised Spot Profit</div><div class="text-lg font-extrabold mono mt-1 ${realU>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${realU>=0?'+':''}${fmtU(realU)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtR(sl.realised_net_inr || 0)} (${sl.wins||0} Wins)</div></div>
+            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Net Target • Risk</div><div class="text-lg font-extrabold text-[#00E676] mono mt-1">+${scfg.target_net_pct || '5.0'}%</div><div class="text-[10px] text-slate-400">SL: NONE • 40/30/30 DCA</div></div>
+          </div>
+
+          <div class="card p-4">
+            <div class="text-sm font-extrabold text-white mb-2">⚡ Quick Manual Spot Buy (Any Coin • Zero Stop-Loss)</div>
+            <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+              <input id="sp-buy-sym" placeholder="Coin (BTC, ETH, SOL)" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white uppercase mono" />
+              <input id="sp-buy-amt" type="number" value="${scfg.per_coin_budget_usdt || 120}" placeholder="Budget USDT" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono" />
+              <input id="sp-buy-tgt" type="number" step="0.5" value="${scfg.target_net_pct || 5.0}" placeholder="Target %" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono" />
+              <select id="sp-buy-mode" class="px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white">
+                <option value="dca">3-Step DCA (40/30/30)</option>
+                <option value="single">100% Single Buy</option>
+              </select>
+              <button onclick="quickSpotBuy()" class="py-2 rounded-xl bg-[#00E676] text-[#04120B] font-extrabold">Spot Buy Now</button>
+            </div>
+          </div>
+
+          <div class="space-y-2.5">
+            <div class="text-sm font-extrabold text-white">Active Spot Holdings (${sOpen.length})</div>
+            ${sOpen.length === 0 ? `<div class="card p-5 text-center text-xs text-slate-400">No active Spot holdings yet. Auto-scanner buys Blue-Chips when 4-Point Bounce Check triggers, or use Quick Manual Spot Buy above.</div>` : `<div class="grid grid-cols-1 md:grid-cols-2 gap-3">${sOpen.map(p => {
+              const un = Number(p.unrealised_net_usdt || 0);
+              return `<div class="card p-4 border-[#00E676]/25">
+                <div class="flex justify-between">
+                  <div>
+                    <span class="text-base font-extrabold text-white">${p.symbol}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">DCA ${p.tranches_filled}/${p.max_tranches}</span>
+                    <div class="text-[11px] text-slate-400">Invested ${fmtU(p.total_invested_usdt)} (≈ ${fmtR(p.total_invested_inr)}) of $${p.budget_usdt}</div>
+                  </div>
+                  <div class="text-right mono">
+                    <div class="text-base font-extrabold ${un>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${un>=0?'+':''}${fmtU(un)} (${Number(p.unrealised_net_pct)>=0?'+':''}${p.unrealised_net_pct}%)</div>
+                    <div class="text-[10px] text-slate-400">≈ ${fmtR(p.unrealised_net_inr)}</div>
+                  </div>
+                </div>
+                <div class="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-[#1E293B] text-center text-xs mono">
+                  <div><div class="text-[10px] text-slate-500">Avg Buy</div>$${p.avg_entry_price}</div>
+                  <div><div class="text-[10px] text-slate-500">Live LTP</div>$${p.current_ltp}</div>
+                  <div><div class="text-[10px] text-slate-500">Stop-Loss</div><span class="text-[#00D4FF]">NONE</span></div>
+                  <div><div class="text-[10px] text-slate-500">Net +${p.target_net_pct}%</div><span class="text-[#00E676]">$${p.net_target_price}</span></div>
+                </div>
+                <div class="text-[10px] text-slate-400 mt-2">${p.rationale}</div>
+                <div class="mt-3 flex gap-2">
+                  <button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] text-xs font-bold text-white">🕯️ Chart</button>
+                  ${p.tranches_filled < p.max_tranches ? `<button onclick="addSpotDca('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#00D4FF]/15 text-[#00D4FF] text-xs font-bold">+DCA</button>` : ''}
+                  <button onclick="sellSpotPos('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#F5B700]/15 text-[#F5B700] text-xs font-bold">Sell Now</button>
+                </div>
+              </div>`;
+            }).join('')}</div>`}
+          </div>
+
+          <div class="card p-4 space-y-2.5">
+            <div><h3 class="text-sm font-extrabold text-white">🛡️ Top 10 Blue-Chip 4-Point Bounce Radar</h3><p class="text-[11px] text-slate-400">Support Dip • RSI Oversold • OKX Footprint Buy Absorption • Macro News Shield</p></div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              ${radar.map(r => {
+                const badgeCol = r.stage === 'BUY_READY' ? 'bg-[#00E676]/20 text-[#00E676]' : (r.stage === 'DUMP_BLOCKED' ? 'bg-[#FF3B5C]/20 text-[#FF3B5C]' : 'bg-slate-800 text-slate-300');
+                return `<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-start gap-2">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      <span class="text-sm font-extrabold text-white">${r.symbol}</span>
+                      <span class="text-xs mono text-slate-300">$${r.ltp}</span>
+                      <span class="text-[10px] mono font-bold ${Number(r.dip_from_high_pct)<=-2?'text-[#F5B700]':'text-slate-400'}">Dip ${r.dip_from_high_pct}%</span>
+                    </div>
+                    <div class="text-[10px] text-slate-400 mt-1">RSI ${r.rsi_15m} • CVD ${Number(r.footprint_delta_pct)>=0?'+':''}${r.footprint_delta_pct}% • L2 ${r.buy_pct}% Buy</div>
+                    <div class="text-[10px] text-[#00E676] truncate mt-0.5">${(r.passed_rules||[]).slice(0,2).join(' • ')}</div>
+                  </div>
+                  <div class="flex flex-col items-end gap-1.5 shrink-0">
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded ${badgeCol}">${r.stage} (${r.checks_passed}/4)</span>
+                    <button onclick="quickSpotBuy('${r.symbol}')" class="px-2.5 py-1 rounded-lg bg-[#141B2D] border border-[#00E676]/40 text-[10px] font-bold text-[#00E676]">Spot Buy</button>
+                  </div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+
+          <div class="card p-4">
+            <h3 class="text-sm font-extrabold text-white">⚙️ Spot Vault Settings (Editable Anytime)</h3>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-xs">
+              <div><label class="text-slate-400">Per-Coin Budget ($)</label><input id="sp-budget" type="number" value="${scfg.per_coin_budget_usdt||120}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+              <div><label class="text-slate-400">Net Target %</label><input id="sp-tgt" type="number" step="0.5" value="${scfg.target_net_pct||5.0}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+              <div><label class="text-slate-400">Max Active Coins</label><input id="sp-max" type="number" value="${scfg.max_active_coins||3}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+              <div><label class="text-slate-400">Auto Blue-Chip Scan</label><select id="sp-auto" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white"><option value="true" ${scfg.enabled!==false?'selected':''}>ON</option><option value="false" ${scfg.enabled===false?'selected':''}>OFF (Manual Only)</option></select></div>
+            </div>
+            <button onclick="saveSpotCfg()" class="mt-3 px-4 py-2 rounded-xl bg-[#00E676] text-[#04120B] font-bold text-xs">Save Spot Settings</button>
+          </div>
+
+          <div class="card p-4">
+            <h3 class="text-sm font-extrabold text-white mb-2">Closed Spot Profit Ledger (${sClosed.length})</h3>
+            <div class="space-y-2">${sClosed.length === 0 ? `<div class="text-xs text-slate-500">No closed spot trades yet.</div>` : sClosed.map(c => `<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><span class="text-sm font-bold text-white">${c.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676]">${c.outcome}</span><div class="text-[11px] text-slate-500">Avg $${c.avg_entry_price} → $${c.exit_fill_price} • DCA ${c.tranches_filled}/${c.max_tranches} • ${c.exit_reason}</div></div><div class="flex items-center gap-3"><span class="mono text-sm font-bold ${Number(c.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${Number(c.net_pnl_usdt)>=0?'+':''}${fmtU(c.net_pnl_usdt)}</span><button onclick="delSpotPos('${c.position_id}')" class="text-[10px] text-slate-400 hover:text-[#FF3B5C]">Delete</button></div></div>`).join('')}</div>
           </div>`;
       } else if (section === 'markets') {
         const items = marketsData?.items || [];
@@ -600,6 +753,7 @@
 
     async function refreshCore() {
       overview = await apiFetch('/api/v1/crypto/overview');
+      if (section === 'spot') spotData = await apiFetch('/api/v1/spot/overview');
       render();
     }
 
