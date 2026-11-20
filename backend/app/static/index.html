@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TRADEIQ Crypto v1.0 — 24/7 USDT-M Paper Desk</title>
+  <title>TRADEIQ Crypto Pro v1.0 — 24/7 USDT-M Paper Desk</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
   <style>
     [hidden]{display:none !important}
@@ -22,8 +22,8 @@
   <div id="login-view" class="min-h-screen flex items-center justify-center p-4">
     <div class="card w-full max-w-sm p-6 space-y-4">
       <div>
-        <div class="text-xl font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs px-2 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700]">CRYPTO v1.0</span></div>
-        <p class="text-xs text-slate-400 mt-1">Owner Password Required • Paper Trading Only</p>
+        <div class="text-xl font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs px-2 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700]">CRYPTO PRO</span></div>
+        <p class="text-xs text-slate-400 mt-1">Owner Password Required • 534+ Live Coins • Paper Only</p>
       </div>
       <div id="login-err" class="hidden text-xs text-[#FF3B5C] bg-[#FF3B5C]/10 border border-[#FF3B5C]/30 rounded-xl px-3 py-2"></div>
       <input id="login-pwd" type="password" placeholder="Enter Owner Password" class="w-full px-3.5 py-2.5 rounded-xl bg-[#090D16] border border-[#24324A] text-white text-sm focus:outline-none focus:border-[#00E676]" />
@@ -40,9 +40,9 @@
           <div class="min-w-0">
             <div class="flex items-center gap-1.5">
               <span class="text-base sm:text-lg font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span></span>
-              <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700] border border-[#F5B700]/35">CRYPTO v1.0</span>
+              <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#F5B700]/15 text-[#F5B700] border border-[#F5B700]/35">PRO</span>
             </div>
-            <p id="sec-label" class="text-[11px] text-slate-400 truncate leading-none mt-0.5">Crypto Trading Desk • USDT-M Paper</p>
+            <p id="sec-label" class="text-[11px] text-slate-400 truncate leading-none mt-0.5">Crypto Trading Desk • 534+ Coins</p>
           </div>
         </div>
         <div class="flex items-center gap-2 shrink-0">
@@ -64,7 +64,7 @@
       <aside class="relative w-72 max-w-[85vw] h-full bg-[#090D16] border-r border-[#1E293B] p-4 flex flex-col justify-between overflow-y-auto">
         <div>
           <div class="flex items-center justify-between pb-4 border-b border-[#1E293B]">
-            <div class="text-lg font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs text-[#F5B700]">CRYPTO</span></div>
+            <div class="text-lg font-extrabold text-white">TRADE<span class="text-[#00E676]">IQ</span> <span class="text-xs text-[#F5B700]">CRYPTO PRO</span></div>
             <button id="menu-close" class="w-8 h-8 rounded-lg bg-[#141B2D] text-slate-300">✕</button>
           </div>
           <nav id="drawer-nav" class="mt-4 space-y-1.5"></nav>
@@ -87,16 +87,139 @@
     let horizon = 'intraday';
     let labFilter = 'ALL';
     let chartSym = 'BTCUSDT';
+    let chartTf = '1m';
+    let marketSearch = '';
+    let marketSort = 'volume';
     let overview = null;
+    let marketsData = null;
     let boomData = [];
     let catalystData = [];
     let connData = null;
-    let chartObj = null;
+    let tvChart = null;
+    let candleSeriesRef = null;
+    let volSeriesRef = null;
+    let okxPublicWs = null;
+    let okxCandleWs = null;
+    let liveFpBuy = 0;
+    let liveFpSell = 0;
+    let lastLivePx = 0;
     let ws = null;
+
+    function closeExchangeChartSockets() {
+      try { if (okxPublicWs) okxPublicWs.close(); } catch {}
+      try { if (okxCandleWs) okxCandleWs.close(); } catch {}
+      okxPublicWs = null;
+      okxCandleWs = null;
+    }
+
+    function connectOkxDirectMsStream(sym, tf) {
+      closeExchangeChartSockets();
+      const instId = sym.endsWith('USDT') ? sym.slice(0, -4) + '-USDT-SWAP' : sym;
+      const okxBar = { '1m':'candle1m', '5m':'candle5m', '15m':'candle15m', '1h':'candle1H', '4h':'candle4H', '1d':'candle1D' }[tf] || 'candle1m';
+      liveFpBuy = 0;
+      liveFpSell = 0;
+
+      // 1. Direct OKX Public WS: Millisecond Tickers + 5-Level L2 Orderbook (books5) + Tick-by-Tick Trades (Footprint CVD)
+      try {
+        okxPublicWs = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
+        okxPublicWs.onopen = () => {
+          okxPublicWs.send(JSON.stringify({
+            op: 'subscribe',
+            args: [
+              { channel: 'tickers', instId },
+              { channel: 'books5', instId },
+              { channel: 'trades', instId }
+            ]
+          }));
+        };
+        okxPublicWs.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            const ch = msg?.arg?.channel;
+            const d = msg?.data?.[0];
+            if (!d) return;
+
+            if (ch === 'tickers') {
+              const px = Number(d.last);
+              const op24 = Number(d.open24h || px);
+              const pct = op24 > 0 ? (((px - op24) / op24) * 100) : 0;
+              const ltpEl = document.getElementById('ch-ltp');
+              const chgEl = document.getElementById('ch-chg');
+              if (ltpEl) {
+                ltpEl.textContent = '$' + d.last;
+                ltpEl.style.color = px >= lastLivePx ? '#00E676' : '#FF3B5C';
+                lastLivePx = px;
+              }
+              if (chgEl) {
+                chgEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+                chgEl.style.color = pct >= 0 ? '#00E676' : '#FF3B5C';
+              }
+            } else if (ch === 'books5') {
+              const bids = d.bids || [];
+              const asks = d.asks || [];
+              const bq = bids.reduce((a, x) => a + Number(x[1] || 0), 0);
+              const aq = asks.reduce((a, x) => a + Number(x[1] || 0), 0);
+              const bp = (bq + aq) > 0 ? ((bq / (bq + aq)) * 100).toFixed(1) : '50.0';
+              const pres = Number(bp) >= 58 ? 'BUY_IMBALANCE' : (Number(bp) <= 42 ? 'SELL_IMBALANCE' : 'BALANCED');
+              const obBox = document.getElementById('ob-box');
+              if (obBox) {
+                obBox.innerHTML = `<div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">Live Millisecond 5-Level L2 Orderbook</span><span class="text-xs font-bold ${Number(bp)>=50?'text-[#00E676]':'text-[#FF3B5C]'}">${pres} (${bp}% Buy)</span></div>
+                  <div class="grid grid-cols-2 gap-3 text-xs mono">
+                    <div class="space-y-1">${bids.slice(0,5).map(b => `<div class="flex justify-between px-2 py-1 rounded bg-[#00E676]/10"><span class="text-[#00E676]">$${b[0]}</span><span>${b[1]}</span></div>`).join('')}</div>
+                    <div class="space-y-1">${asks.slice(0,5).map(a => `<div class="flex justify-between px-2 py-1 rounded bg-[#FF3B5C]/10"><span class="text-[#FF3B5C]">$${a[0]}</span><span>${a[1]}</span></div>`).join('')}</div>
+                  </div>`;
+              }
+            } else if (ch === 'trades') {
+              for (const tr of (msg.data || [])) {
+                const val = Number(tr.sz || 0) * Number(tr.px || 0);
+                if (tr.side === 'buy') liveFpBuy += val;
+                else liveFpSell += val;
+              }
+              const tot = liveFpBuy + liveFpSell;
+              if (tot > 0) {
+                const dp = (((liveFpBuy - liveFpSell) / tot) * 100).toFixed(1);
+                const bias = Number(dp) >= 10 ? 'BUY_ABSORPTION' : (Number(dp) <= -10 ? 'SELL_ABSORPTION' : 'NEUTRAL');
+                const fpBox = document.getElementById('fp-box');
+                if (fpBox) {
+                  fpBox.innerHTML = `<div class="flex items-center justify-between flex-wrap gap-2">
+                    <div><div class="text-sm font-extrabold text-white">Live Millisecond Tick Footprint &amp; CVD (${sym})</div>
+                    <div class="text-[11px] text-slate-400">Direct OKX exchange tick stream • Real-time Buy vs Sell aggressor volume</div></div>
+                    <span class="text-xs font-extrabold mono px-2.5 py-1 rounded-lg ${Number(dp)>=0?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${bias} (${Number(dp)>=0?'+':''}${dp}%)</span>
+                  </div>`;
+                }
+              }
+            }
+          } catch {}
+        };
+      } catch {}
+
+      // 2. Direct OKX Business WS: Millisecond Live Candlestick + Volume Updates on TradingView Chart!
+      try {
+        okxCandleWs = new WebSocket('wss://ws.okx.com:8443/ws/v5/business');
+        okxCandleWs.onopen = () => {
+          okxCandleWs.send(JSON.stringify({
+            op: 'subscribe',
+            args: [{ channel: okxBar, instId }]
+          }));
+        };
+        okxCandleWs.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            const row = msg?.data?.[0];
+            if (!row || !candleSeriesRef || !volSeriesRef) return;
+            const ts = Math.floor(Number(row[0]) / 1000);
+            const o = Number(row[1]), h = Number(row[2]), l = Number(row[3]), cl = Number(row[4]), v = Number(row[5]);
+            candleSeriesRef.update({ time: ts, open: o, high: h, low: l, close: cl });
+            volSeriesRef.update({ time: ts, value: v, color: cl >= o ? 'rgba(0,230,118,0.32)' : 'rgba(255,59,92,0.32)' });
+          } catch {}
+        };
+      } catch {}
+    }
 
     function showLogin(msg) {
       authToken = null;
       sessionStorage.removeItem(TOKEN_KEY);
+      closeExchangeChartSockets();
       document.getElementById('app-view').hidden = true;
       document.getElementById('login-view').hidden = false;
       const err = document.getElementById('login-err');
@@ -133,6 +256,7 @@
 
     function fmtU(n) { const v = Number(n || 0); return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
     function fmtR(n) { const v = Number(n || 0); return (v < 0 ? '-' : '') + '₹' + Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
+    function fmtVol(v) { const n = Number(v || 0); if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B'; if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M'; return '$' + n.toFixed(0); }
 
     function renderMajors() {
       const bar = document.getElementById('majors-bar');
@@ -150,13 +274,14 @@
 
     function renderNav() {
       const items = [
-        { id: 'desk', icon: '⚡', t: 'Crypto Trading Desk', s: 'Intraday • Reversion • Trend • Regime' },
-        { id: 'boom', icon: '🚀', t: 'Daily Boom Radar', s: 'Small/Mid-Cap Explosive Movers (1x)' },
+        { id: 'desk', icon: '⚡', t: 'Crypto Trading Desk', s: 'Intraday • Reversion • Trend • Boom' },
+        { id: 'markets', icon: '🌐', t: 'All 534+ Live Markets', s: 'Search & Sort Full OKX Exchange' },
+        { id: 'chart', icon: '🕯️', t: 'Live Candlestick & Depth', s: '1m–1d TradingView + Footprint CVD' },
+        { id: 'boom', icon: '🚀', t: 'Daily Boom Radar', s: 'Dynamic 534-Coin Explosive Movers' },
         { id: 'catalyst', icon: '🌍', t: 'Macro & Catalyst Radar', s: 'Musk • Trump • Fed • SEC News' },
         { id: 'lab', icon: '🧪', t: 'Accuracy Lab vs Elite TG', s: `Top ${overview?.tg_daily_cap || 6}/day TG vs All Lab` },
-        { id: 'chart', icon: '📊', t: 'Live Chart & L2 Depth', s: 'Candles + Orderbook' },
         { id: 'portfolio', icon: '💼', t: 'Portfolio & Supabase', s: 'Settings & Permanent Ledger' },
-        { id: 'system', icon: '⚙️', t: 'System & Exchange Feeds', s: overview?.active_exchange || 'Bybit/OKX/Kraken' }
+        { id: 'system', icon: '⚙️', t: 'System & Exchange Feeds', s: overview?.active_exchange || 'OKX v5 Primary' }
       ];
       document.getElementById('drawer-nav').innerHTML = items.map(i => `
         <button onclick="goSec('${i.id}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left border ${section === i.id ? 'bg-[#00E676]/15 border-[#00E676]/45 text-white' : 'border-transparent text-slate-300'}">
@@ -166,16 +291,28 @@
 
     window.goSec = async (s) => {
       section = s;
+      closeExchangeChartSockets();
       document.getElementById('drawer').classList.add('hidden');
+      if (s === 'markets') await loadMarkets();
       if (s === 'boom') { const r = await apiFetch('/api/v1/crypto/boom'); boomData = r.items || []; }
       if (s === 'catalyst') { const r = await apiFetch('/api/v1/crypto/catalysts'); catalystData = r.items || []; }
       if (s === 'system') { connData = await apiFetch('/api/v1/system/connectivity'); }
       render();
-      if (s === 'chart') loadChart();
+      if (s === 'chart') {
+        await loadChart(true);
+      }
     };
+
+    window.loadMarkets = async () => {
+      marketsData = await apiFetch(`/api/v1/crypto/markets?q=${encodeURIComponent(marketSearch)}&sort=${encodeURIComponent(marketSort)}&limit=120`);
+      if (section === 'markets') render();
+    };
+    window.setMarketSort = async (s) => { marketSort = s; await loadMarkets(); };
+    window.onMarketSearch = async (val) => { marketSearch = val; await loadMarkets(); };
     window.setHor = (h) => { horizon = h; render(); };
     window.setLabF = (f) => { labFilter = f; render(); };
-    window.openChart = (sym) => { chartSym = sym; goSec('chart'); };
+    window.openChart = (sym) => { chartSym = sym.toUpperCase().endsWith('USDT') ? sym.toUpperCase() : (sym.toUpperCase() + 'USDT'); goSec('chart'); };
+    window.setTf = (tf) => { chartTf = tf; loadChart(true); };
 
     window.closePos = async (pid) => {
       await apiFetch('/api/v1/paper/positions/' + encodeURIComponent(pid) + '/close', { method: 'POST', body: '{}' });
@@ -201,32 +338,122 @@
       await refreshCore();
     };
 
-    async function loadChart() {
-      const r = await apiFetch('/api/v1/crypto/chart/' + encodeURIComponent(chartSym) + '?interval=15m');
+    async function loadChart(rebuildLayout) {
+      const r = await apiFetch(`/api/v1/crypto/chart/${encodeURIComponent(chartSym)}?interval=${encodeURIComponent(chartTf)}`);
       const d = r.depth || {};
+      const fp = r.footprint || {};
       const c = r.candles || [];
-      document.getElementById('content').innerHTML = `
-        <div class="card p-4">
-          <div class="flex flex-wrap justify-between gap-2 mb-3">
-            <div class="text-base font-extrabold text-white">${r.symbol} • 15m Live Chart</div>
-            <div class="flex gap-1.5">${['BTCUSDT','ETHUSDT','SOLUSDT','DOGEUSDT','PEPEUSDT'].map(s => `<button onclick="openChart('${s}')" class="px-2.5 py-1 rounded-lg text-xs font-bold border ${chartSym===s?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${s.replace('USDT','')}</button>`).join('')}</div>
+      const up24 = Number(r.change_24h_pct || 0) >= 0;
+      const dpct = Number(fp.delta_pct || 0);
+
+      if (rebuildLayout || !document.getElementById('tv-candle-box')) {
+        document.getElementById('content').innerHTML = `
+          <div class="card p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="text-lg font-extrabold text-white">${r.symbol}</span>
+                  <span id="ch-ltp" class="text-base font-extrabold mono ${up24?'text-[#00E676]':'text-[#FF3B5C]'}">$${r.ltp}</span>
+                  <span id="ch-chg" class="text-xs font-bold mono px-1.5 py-0.5 rounded ${up24?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${up24?'+':''}${r.change_24h_pct}%</span>
+                </div>
+                <div class="text-[11px] text-slate-400">TradingView Live Candlesticks • Direct OKX Millisecond Stream ⚡</div>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <input id="chart-sym-inp" placeholder="Search any coin (e.g. SUI)" class="w-36 sm:w-44 px-2.5 py-1.5 rounded-xl bg-[#090D16] border border-[#24324A] text-xs text-white uppercase" />
+                <button onclick="const v=document.getElementById('chart-sym-inp').value.trim(); if(v) openChart(v);" class="px-3 py-1.5 rounded-xl bg-[#00D4FF] text-[#04120B] font-bold text-xs">Go</button>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div class="flex gap-1.5 flex-wrap">
+                ${['1m','5m','15m','1h','4h','1d'].map(tf => `<button onclick="setTf('${tf}')" class="px-2.5 py-1 rounded-lg text-xs font-bold border ${chartTf===tf?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${tf}</button>`).join('')}
+              </div>
+              <button onclick="goSec('markets')" class="text-xs font-bold text-[#00D4FF]">Browse All 534+ Coins →</button>
+            </div>
+
+            <div id="tv-candle-box" class="w-full h-80 rounded-xl overflow-hidden border border-[#1B2436] bg-[#070B12]"></div>
           </div>
-          <div class="relative h-64 bg-[#070B12] rounded-xl p-2 border border-[#1B2436]"><canvas id="c-cv"></canvas></div>
-        </div>
-        <div class="card p-4">
-          <div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">L2 Orderbook Depth</span><span class="text-xs font-bold text-[#00E676]">${d.pressure || 'LIVE'} (${d.buy_pct || 50}% Buy)</span></div>
+
+          <!-- Live OKX Tick Footprint / CVD Strip -->
+          <div id="fp-box" class="card p-4"></div>
+
+          <!-- Live 5-Level L2 Orderbook Depth -->
+          <div id="ob-box" class="card p-4"></div>
+        `;
+      } else {
+        const ltpEl = document.getElementById('ch-ltp');
+        if (ltpEl) ltpEl.textContent = '$' + r.ltp;
+      }
+
+      // Render TradingView Lightweight Candlesticks + Volume
+      const box = document.getElementById('tv-candle-box');
+      if (box && window.LightweightCharts && c.length > 0) {
+        box.innerHTML = '';
+        tvChart = LightweightCharts.createChart(box, {
+          layout: { background: { type: 'solid', color: '#070B12' }, textColor: '#94A3B8' },
+          grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
+          crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+          rightPriceScale: { borderColor: '#1E293B' },
+          timeScale: { borderColor: '#1E293B', timeVisible: true, secondsVisible: chartTf === '1m' },
+          width: box.clientWidth,
+          height: 320,
+        });
+        const samplePx = Number(c[c.length - 1].c);
+        const precision = samplePx < 0.01 ? 7 : samplePx < 1 ? 5 : samplePx < 10 ? 4 : 2;
+        const candleSeries = tvChart.addCandlestickSeries({
+          upColor: '#00E676', downColor: '#FF3B5C', borderVisible: false,
+          wickUpColor: '#00E676', wickDownColor: '#FF3B5C',
+          priceFormat: { type: 'price', precision, minMove: Number((1 / Math.pow(10, precision)).toFixed(precision)) },
+        });
+        const volSeries = tvChart.addHistogramSeries({
+          priceFormat: { type: 'volume' }, priceScaleId: '',
+        });
+        tvChart.priceScale('').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+        const seenTs = new Set();
+        const cData = [];
+        const vData = [];
+        for (const x of c) {
+          const ts = Math.floor(Number(x.ts_ms) / 1000);
+          if (seenTs.has(ts)) continue;
+          seenTs.add(ts);
+          const o = Number(x.o), h = Number(x.h), l = Number(x.l), cl = Number(x.c), v = Number(x.v);
+          cData.push({ time: ts, open: o, high: h, low: l, close: cl });
+          vData.push({ time: ts, value: v, color: cl >= o ? 'rgba(0,230,118,0.28)' : 'rgba(255,59,92,0.28)' });
+        }
+        candleSeries.setData(cData);
+        volSeries.setData(vData);
+        candleSeriesRef = candleSeries;
+        volSeriesRef = volSeries;
+        tvChart.timeScale().fitContent();
+        connectOkxDirectMsStream(r.symbol, chartTf);
+      }
+
+      // Render Footprint CVD
+      const fpBox = document.getElementById('fp-box');
+      if (fpBox) {
+        fpBox.innerHTML = `
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <div class="text-sm font-extrabold text-white">OKX Tick Footprint &amp; CVD (${r.symbol})</div>
+              <div class="text-[11px] text-slate-400">Live aggressor Buy vs Sell volume from last 100 exchange ticks</div>
+            </div>
+            <span class="text-xs font-extrabold mono px-2.5 py-1 rounded-lg ${dpct>=0?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">
+              ${fp.cvd_bias || 'NEUTRAL'} (${dpct>=0?'+':''}${dpct}%)
+            </span>
+          </div>`;
+      }
+
+      // Render L2 Orderbook Depth
+      const obBox = document.getElementById('ob-box');
+      if (obBox) {
+        obBox.innerHTML = `
+          <div class="flex justify-between mb-2"><span class="text-sm font-extrabold text-white">Live 5-Level L2 Orderbook Depth</span><span class="text-xs font-bold text-[#00E676]">${d.pressure || 'LIVE'} (${d.buy_pct || 50}% Buy)</span></div>
           <div class="grid grid-cols-2 gap-3 text-xs mono">
             <div class="space-y-1">${(d.bids||[]).map(b => `<div class="flex justify-between px-2 py-1 rounded bg-[#00E676]/10"><span class="text-[#00E676]">$${b.price}</span><span>${b.qty}</span></div>`).join('')}</div>
             <div class="space-y-1">${(d.asks||[]).map(a => `<div class="flex justify-between px-2 py-1 rounded bg-[#FF3B5C]/10"><span class="text-[#FF3B5C]">$${a.price}</span><span>${a.qty}</span></div>`).join('')}</div>
-          </div>
-        </div>`;
-      const cv = document.getElementById('c-cv');
-      if (chartObj) chartObj.destroy();
-      chartObj = new Chart(cv, {
-        type: 'line',
-        data: { labels: c.map((_, i) => i + 1), datasets: [{ label: r.symbol, data: c.map(x => Number(x.c)), borderColor: '#00E676', backgroundColor: 'rgba(0,230,118,0.12)', fill: true, tension: 0.25 }] },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#CBD5E1' } } }, scales: { x: { ticks: { color: '#64748B' } }, y: { ticks: { color: '#94A3B8' } } } }
-      });
+          </div>`;
+      }
     }
 
     function render() {
@@ -248,9 +475,10 @@
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Telegram Elite Today</div><div class="text-lg font-extrabold text-[#F5B700] mono mt-1">${overview?.tg_sent_today || 0} / ${overview?.tg_daily_cap || 6}</div><div class="text-[10px] text-slate-400">A+ Trades Sent</div></div>
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Backend Lab Accuracy</div><div class="text-lg font-extrabold text-[#00E676] mono mt-1">${led.accuracy_pct || '0.0'}%</div><div class="text-[10px] text-slate-400">${led.wins||0}W/${led.losses||0}L • ${openPos.length} Open</div></div>
           </div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <button onclick="goSec('boom')" class="card p-3.5 border-[#A855F7]/40 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">🚀 Daily Boom Radar</div><div class="text-[11px] text-slate-400 mt-0.5">Small/low-price explosive movers (Strict 1x)</div></div><span class="text-xs font-bold text-[#D8B4FE]">Open →</span></button>
-            <button onclick="goSec('catalyst')" class="card p-3.5 border-[#F5B700]/35 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">⚡ Macro &amp; Catalyst Radar</div><div class="text-[11px] text-slate-400 mt-0.5">Musk / Trump / Fed / SEC live momentum</div></div><span class="text-xs font-bold text-[#F5B700]">Open →</span></button>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <button onclick="goSec('markets')" class="card p-3.5 border-[#00D4FF]/35 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">🌐 All 534+ Coins</div><div class="text-[11px] text-slate-400 mt-0.5">Search &amp; open 1m–1d candles</div></div><span class="text-xs font-bold text-[#00D4FF]">Open →</span></button>
+            <button onclick="goSec('boom')" class="card p-3.5 border-[#A855F7]/40 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">🚀 Daily Boom Radar</div><div class="text-[11px] text-slate-400 mt-0.5">534-coin dynamic movers (1x)</div></div><span class="text-xs font-bold text-[#D8B4FE]">Open →</span></button>
+            <button onclick="goSec('catalyst')" class="card p-3.5 border-[#F5B700]/35 text-left flex justify-between items-center"><div><div class="text-sm font-extrabold text-white">⚡ Macro Catalyst</div><div class="text-[11px] text-slate-400 mt-0.5">Musk / Trump / Fed / SEC</div></div><span class="text-xs font-bold text-[#F5B700]">Open →</span></button>
           </div>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
             ${[
@@ -261,7 +489,7 @@
             ].map(t => `<button onclick="setHor('${t.id}')" class="p-3 rounded-2xl border text-left" style="background:${horizon===t.id?'#141B2D':'#0E131F'};border-color:${horizon===t.id?t.col:'#1E293B'}"><div class="flex justify-between"><span class="text-xs font-extrabold text-white">${t.l}</span><span class="text-[11px] mono font-bold" style="color:${t.col}">${t.c}</span></div><div class="text-[10px] text-slate-400">${t.s}</div></button>`).join('')}
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            ${list.length === 0 ? `<div class="card p-5 text-center text-xs text-slate-400 md:col-span-2">No open ${horizon} positions right now. 24/7 scanner checks every 5 min (or tap Scan).</div>` : list.map(p => {
+            ${list.length === 0 ? `<div class="card p-5 text-center text-xs text-slate-400 md:col-span-2">No open ${horizon} positions right now. 24/7 scanner dynamically screens all 534+ OKX coins every 5 min.</div>` : list.map(p => {
               const nu = Number(p.unrealised_net_usdt || 0);
               return `<div class="card p-4">
                 <div class="flex justify-between"><div><span class="text-base font-extrabold text-white">${p.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">${p.direction} ${p.leverage}x</span><div class="text-[11px] text-slate-400">${p.engine_code}</div></div>
@@ -273,13 +501,38 @@
                   <div><div class="text-[10px] text-slate-500">SL</div><span class="text-[#FF3B5C]">$${p.stop_loss}</span></div>
                   <div><div class="text-[10px] text-slate-500">Target</div><span class="text-[#00E676]">$${p.target_price}</span></div>
                 </div>
-                <div class="mt-3 flex gap-2"><button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] text-xs font-bold text-white">📊 Chart</button><button onclick="closePos('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#FF3B5C]/15 text-[#FF3B5C] text-xs font-bold">Exit</button></div>
+                <div class="mt-3 flex gap-2"><button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] text-xs font-bold text-white">🕯️ Live Chart</button><button onclick="closePos('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#FF3B5C]/15 text-[#FF3B5C] text-xs font-bold">Exit</button></div>
               </div>`;
             }).join('')}
           </div>`;
+      } else if (section === 'markets') {
+        const items = marketsData?.items || [];
+        el.innerHTML = `
+          <div class="card p-4 space-y-3">
+            <div class="flex flex-wrap justify-between items-center gap-2">
+              <div><h2 class="text-base font-extrabold text-white">🌐 All ${marketsData?.total_market_coins || '534+'} Live OKX USDT Coins</h2><p class="text-xs text-slate-400">Tap any coin to open real-time 1m–1d Candlesticks, Footprint CVD &amp; L2 Orderbook.</p></div>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <input value="${marketSearch}" oninput="onMarketSearch(this.value)" placeholder="Search coin (BTC, PEPE, SUI, WIF...)" class="flex-1 min-w-[180px] px-3 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-xs text-white uppercase" />
+              ${[
+                { id:'volume', l:'Top Volume' },
+                { id:'gainers', l:'🚀 Top Gainers' },
+                { id:'losers', l:'🔻 Top Losers' }
+              ].map(s => `<button onclick="setMarketSort('${s.id}')" class="px-3 py-1.5 rounded-xl text-xs font-bold border ${marketSort===s.id?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${s.l}</button>`).join('')}
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            ${items.map(m => {
+              const up = Number(m.change_24h_pct) >= 0;
+              return `<button onclick="openChart('${m.symbol}')" class="card p-3 flex items-center justify-between text-left hover:border-[#00D4FF] transition">
+                <div><div class="text-sm font-extrabold text-white">${m.symbol}</div><div class="text-[10px] text-slate-400">24h Vol: ${fmtVol(m.volume_24h_usdt)}</div></div>
+                <div class="text-right mono"><div class="text-sm font-bold text-white">$${m.ltp}</div><div class="text-xs font-bold ${up?'text-[#00E676]':'text-[#FF3B5C]'}">${up?'+':''}${m.change_24h_pct}%</div></div>
+              </button>`;
+            }).join('')}
+          </div>`;
       } else if (section === 'boom') {
-        el.innerHTML = `<div class="card p-4 border-[#A855F7]/40"><h2 class="text-base font-extrabold text-white">🚀 Daily Boom Radar (Strict 1x Micro-Size)</h2><p class="text-xs text-slate-400 mt-0.5">Live high-volatility breakout scanner for small/mid-cap USDT coins.</p></div>
-          <div class="space-y-2.5">${boomData.map(b => `<div class="card p-4"><div class="flex justify-between items-start gap-2"><div><span class="text-base font-extrabold text-white">${b.symbol}</span> <span class="text-xs mono text-slate-300">$${b.ltp}</span> <span class="text-xs mono font-bold text-[#00E676]">${Number(b.change_24h_pct)>=0?'+':''}${b.change_24h_pct}%</span><div class="text-[11px] text-slate-400 mt-1">${(b.checks||[]).join(' • ')}</div></div><span class="text-[10px] font-bold px-2 py-1 rounded bg-[#A855F7]/20 text-[#D8B4FE]">${b.stage} (${b.score})</span></div></div>`).join('')}</div>`;
+        el.innerHTML = `<div class="card p-4 border-[#A855F7]/40"><h2 class="text-base font-extrabold text-white">🚀 Daily Boom Radar (534-Coin Dynamic • Strict 1x)</h2><p class="text-xs text-slate-400 mt-0.5">Screens ALL 534+ OKX coins for +4% to +30% volume breakouts with Footprint Anti-Dump protection.</p></div>
+          <div class="space-y-2.5">${boomData.map(b => `<button onclick="openChart('${b.symbol}')" class="w-full text-left card p-4 hover:border-[#A855F7] transition"><div class="flex justify-between items-start gap-2"><div><span class="text-base font-extrabold text-white">${b.symbol}</span> <span class="text-xs mono text-slate-300">$${b.ltp}</span> <span class="text-xs mono font-bold text-[#00E676]">${Number(b.change_24h_pct)>=0?'+':''}${b.change_24h_pct}%</span><div class="text-[11px] text-slate-400 mt-1">${(b.checks||[]).join(' • ')}</div></div><span class="text-[10px] font-bold px-2 py-1 rounded bg-[#A855F7]/20 text-[#D8B4FE]">${b.stage} (${b.score})</span></div></button>`).join('')}</div>`;
       } else if (section === 'catalyst') {
         el.innerHTML = `<div class="card p-4 border-[#F5B700]/35"><h2 class="text-base font-extrabold text-white">⚡ Macro &amp; Catalyst Radar (Musk / Trump / Fed / SEC)</h2></div>
           <div class="space-y-2.5">${catalystData.map(n => `<a href="${n.url||'#'}" target="_blank" rel="noreferrer" class="block card p-4"><div class="flex justify-between text-[10px]"><span class="font-bold text-[#F5B700]">${n.tag}</span><span class="text-slate-400">${n.source}</span></div><div class="text-sm font-bold text-white mt-1">${n.headline}</div><div class="mt-2 flex gap-1.5 flex-wrap text-[10px]">${(n.mapped_coins||[]).map(c=>`<span class="px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] mono font-bold">${c}</span>`).join('')}<span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 font-bold">${n.impact}</span></div></a>`).join('')}</div>`;
@@ -339,9 +592,9 @@
     document.getElementById('drawer-bg').addEventListener('click', () => document.getElementById('drawer').classList.add('hidden'));
     document.getElementById('logout-btn').addEventListener('click', () => showLogin('Signed out.'));
     document.getElementById('scan-btn').addEventListener('click', async () => {
-      showToast('Running 4-Engine + Boom + Catalyst scan...');
+      showToast('Scanning all 534+ live OKX coins...');
       const r = await apiFetch('/api/v1/crypto/scan', { method: 'POST', body: JSON.stringify({ execute_entries: true }) });
-      showToast(`Scan done: ${r.signals_evaluated} evaluated • ${r.opened_count} opened`);
+      showToast(`Screened ${r.market_universe_screened || 534} coins • ${r.opened_count} opened`);
       await refreshCore();
     });
 
