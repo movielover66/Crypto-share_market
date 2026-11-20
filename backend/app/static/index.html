@@ -506,7 +506,8 @@
 
       if (section === 'desk') {
         const netU = Number(led.total_net_usdt || 0);
-        const byH = (h) => openPos.filter(p => p.horizon_bucket === h);
+        const normH = (b) => { const x = String(b || 'intraday').toLowerCase(); return ['intraday','reversion','swing','boom'].includes(x) ? x : 'intraday'; };
+        const byH = (h) => openPos.filter(p => normH(p.horizon_bucket) === h);
         const list = byH(horizon);
         el.innerHTML = `
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
