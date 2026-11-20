@@ -73,6 +73,7 @@ class CryptoSupabaseStore:
                 direction = parts[2] if len(parts) > 2 and parts[2] in ("LONG", "SHORT") else "LONG"
                 lev = Decimal(parts[3]) if len(parts) > 3 else Decimal("2.0")
                 tier = parts[4] if len(parts) > 4 else "BACKEND_LAB"
+                tg_mid = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else None
 
                 hold_map = {
                     "intraday": "Intraday • 2–12 hrs (Session Breakout)",
@@ -107,6 +108,7 @@ class CryptoSupabaseStore:
                     net_pnl_usdt=net_pnl, outcome=outcome,
                     opened_at_ist=created_ist, closed_at_ist=closed_ist,
                     rationale="Restored permanently from Supabase",
+                    tg_message_id=tg_mid,
                 ))
             except Exception:
                 continue
@@ -121,7 +123,7 @@ class CryptoSupabaseStore:
             "buy_price_inr": float(pos.entry_fill_price),
             "target_inr": float(pos.target_price),
             "stop_loss_inr": float(pos.stop_loss),
-            "hold_label": f"{pos.horizon_bucket}|{pos.engine_code}|{pos.direction}|{pos.leverage}|{pos.tier}",
+            "hold_label": f"{pos.horizon_bucket}|{pos.engine_code}|{pos.direction}|{pos.leverage}|{pos.tier}|{pos.tg_message_id or 0}",
             "status": "HOLDING",
             "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
         }
@@ -198,6 +200,7 @@ class CryptoSupabaseStore:
                     ((invested * Decimal("0.999")) / avg_px).quantize(Decimal("0.000001")) if avg_px > 0 else Decimal("0")
                 )
                 buy_fees = Decimal(parts[7]) if len(parts) > 7 else (invested * Decimal("0.001")).quantize(Decimal("0.0001"))
+                sp_tg_mid = int(parts[8]) if len(parts) > 8 and parts[8].isdigit() and int(parts[8]) > 0 else None
                 if tgt_px <= 0 and qty > 0:
                     tgt_px = compute_net_target_price(invested, qty, tgt_pct)
 
@@ -226,6 +229,7 @@ class CryptoSupabaseStore:
                     net_pnl_usdt=net_pnl, outcome=outcome,
                     opened_at_ist=created_ist, closed_at_ist=closed_ist,
                     rationale=f"Spot Vault ({tr_filled}/{max_tr} tranches) restored from Supabase",
+                    tg_message_id=sp_tg_mid,
                 ))
             except Exception:
                 continue
@@ -240,7 +244,7 @@ class CryptoSupabaseStore:
             "buy_price_inr": float(pos.avg_entry_price),
             "target_inr": float(pos.net_target_price),
             "stop_loss_inr": 0.0,
-            "hold_label": f"{pos.mode}|{pos.tranches_filled}|{pos.max_tranches}|{pos.budget_usdt}|{pos.target_net_pct}|{pos.first_entry_price}|{pos.total_qty}|{pos.buy_fees_usdt}",
+            "hold_label": f"{pos.mode}|{pos.tranches_filled}|{pos.max_tranches}|{pos.budget_usdt}|{pos.target_net_pct}|{pos.first_entry_price}|{pos.total_qty}|{pos.buy_fees_usdt}|{pos.tg_message_id or 0}",
             "status": "HOLDING",
             "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
         }
