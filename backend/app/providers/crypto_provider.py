@@ -70,16 +70,16 @@ def _http_get_json(url: str, timeout: float = 5.0) -> Optional[Any]:
 class MultiExchangeCryptoProvider:
     def __init__(self, demo_mode: bool = False) -> None:
         self.demo_mode = demo_mode
-        self.active_exchange: str = "DEMO" if demo_mode else "BYBIT_V5"
+        self.active_exchange: str = "DEMO" if demo_mode else "OKX_V5"
         self.usdt_inr_rate: Decimal = Decimal("85.20")
         self.last_rate_sync: float = 0.0
         self.ticker_cache: Dict[str, CryptoTicker] = {}
         self.candle_cache: Dict[Tuple[str, str], Tuple[float, List[CryptoCandle]]] = {}
         self.depth_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self.exchange_health: Dict[str, Dict[str, Any]] = {
-            "bybit": {"ok": not demo_mode, "detail": "Primary Bybit v5 Linear Perp"},
-            "okx": {"ok": True, "detail": "Failover 1 OKX v5 Swap"},
-            "kraken": {"ok": True, "detail": "Failover 2 Kraken US-Safe"},
+            "okx": {"ok": True, "detail": "Primary OKX v5 USDT-Swap"},
+            "kraken": {"ok": True, "detail": "Failover 1 Kraken US-Safe"},
+            "bybit": {"ok": True, "detail": "Failover 2 Bybit v5 (Non-US)"},
         }
         self.last_error: Optional[str] = None
 
@@ -101,7 +101,38 @@ class MultiExchangeCryptoProvider:
         if self.demo_mode:
             return self._demo_tickers()
 
-        # 1. Try Primary: Bybit v5 Linear Perpetuals (single batch call = super fast!)
+        # 1. Primary: OKX v5 USDT-SWAP Tickers (works cleanly from Render US/EU/SG IPs!)
+        okx = _http_get_json("https://www.okx.com/api/v5/market/tickers?instType=SWAP", timeout=6.0)
+        orows = (okx or {}).get("data") or []
+        if orows:
+            now = time.time()
+            for r in orows:
+                inst = str(r.get("instId") or "")
+                if not inst.endswith("-USDT-SWAP"):
+                    continue
+                sym = inst.replace("-USDT-SWAP", "USDT").upper()
+                try:
+                    ltp = Decimal(str(r.get("last") or "0"))
+                    if ltp <= 0:
+                        continue
+                    open24 = Decimal(str(r.get("open24h") or ltp))
+                    pct = (((ltp - open24) / open24) * Decimal("100")).quantize(Decimal("0.01")) if open24 > 0 else Decimal("0.00")
+                    vol = (Decimal(str(r.get("volCcy24h") or "0")) * ltp).quantize(Decimal("0.01"))
+                    self.ticker_cache[sym] = CryptoTicker(
+                        symbol=sym, ltp=ltp, prev_24h=open24, change_24h_pct=pct,
+                        volume_24h_usdt=vol, funding_rate=Decimal("0.0001"),
+                        open_interest=Decimal("0"), source="OKX_V5", updated_at=now,
+                    )
+                except Exception:
+                    continue
+            if self.ticker_cache:
+                self.active_exchange = "OKX_V5"
+                self.exchange_health["okx"] = {"ok": True, "detail": f"Connected • {len(self.ticker_cache)} USDT Swaps"}
+                return self.ticker_cache
+
+        self.exchange_health["okx"] = {"ok": False, "detail": "Timeout — Failover to Bybit/Kraken"}
+
+        # 2. Failover: Bybit v5 Linear Perpetuals
         data = _http_get_json("https://api.bybit.com/v5/market/tickers?category=linear", timeout=6.0)
         rows = (((data or {}).get("result") or {}).get("list")) or []
         if rows:
@@ -203,7 +234,26 @@ class MultiExchangeCryptoProvider:
         if cached and (time.time() - cached[0]) < 35.0:
             return cached[1]
 
-        # Bybit interval map
+        # 1. Primary: OKX v5 Candles (fast on Render US IPs)
+        okx_sym = sym[:-4] + "-USDT-SWAP" if sym.endswith("USDT") else sym
+        o_int = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}.get(interval, "15m")
+        odata = _http_get_json(f"https://www.okx.com/api/v5/market/candles?instId={urllib.parse.quote(okx_sym)}&bar={o_int}&limit={min(limit, 100)}", timeout=5.0)
+        orows = (odata or {}).get("data") or []
+        out: List[CryptoCandle] = []
+        if orows:
+            for r in reversed(orows):
+                try:
+                    out.append(CryptoCandle(
+                        ts_ms=int(r[0]), open=Decimal(str(r[1])), high=Decimal(str(r[2])),
+                        low=Decimal(str(r[3])), close=Decimal(str(r[4])), volume=Decimal(str(r[5])),
+                    ))
+                except Exception:
+                    continue
+            if out:
+                self.candle_cache[key] = (time.time(), out)
+                return out
+
+        # 2. Failover: Bybit v5 Candles
         b_int = {"5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}.get(interval, "15")
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={urllib.parse.quote(sym)}&interval={b_int}&limit={limit}"
         data = _http_get_json(url, timeout=5.0)
@@ -250,6 +300,28 @@ class MultiExchangeCryptoProvider:
         if cached and (time.time() - cached[0]) < 10.0:
             return cached[1]
 
+        # 1. Primary: OKX v5 L2 Orderbook Depth (5-Level Bid/Ask)
+        okx_sym = sym[:-4] + "-USDT-SWAP" if sym.endswith("USDT") else sym
+        odata = _http_get_json(f"https://www.okx.com/api/v5/market/books?instId={urllib.parse.quote(okx_sym)}&sz=5", timeout=4.0)
+        ob_list = (odata or {}).get("data") or []
+        if ob_list:
+            bids = ob_list[0].get("bids") or []
+            asks = ob_list[0].get("asks") or []
+            if bids and asks:
+                buy_q = sum(float(x[1]) for x in bids[:5])
+                sell_q = sum(float(x[1]) for x in asks[:5])
+                tot = max(1e-9, buy_q + sell_q)
+                buy_pct = round((buy_q / tot) * 100, 1)
+                pressure = "BUY_IMBALANCE" if buy_pct >= 58 else ("SELL_IMBALANCE" if buy_pct <= 42 else "BALANCED")
+                out = {
+                    "symbol": sym, "source": "OKX_L2", "buy_pct": buy_pct, "pressure": pressure,
+                    "bids": [{"price": x[0], "qty": x[1]} for x in bids[:5]],
+                    "asks": [{"price": x[0], "qty": x[1]} for x in asks[:5]],
+                }
+                self.depth_cache[sym] = (time.time(), out)
+                return out
+
+        # 2. Failover: Bybit v5 Orderbook
         url = f"https://api.bybit.com/v5/market/orderbook?category=linear&symbol={urllib.parse.quote(sym)}&limit=10"
         data = _http_get_json(url, timeout=4.0)
         res = (data or {}).get("result") or {}
@@ -273,6 +345,58 @@ class MultiExchangeCryptoProvider:
             return out
 
         return {"symbol": sym, "source": "UNAVAILABLE", "buy_pct": 50.0, "pressure": "BALANCED", "bids": [], "asks": []}
+
+
+    def get_footprint_cvd(self, symbol: str) -> Dict[str, Any]:
+        """
+        Computes real-time Footprint Buy/Sell Delta & CVD bias from FREE OKX public tick trades
+        (/api/v5/market/trades). Zero API keys required.
+        """
+        sym = symbol.upper()
+        if self.demo_mode:
+            return {"symbol": sym, "buy_vol": 640.0, "sell_vol": 360.0, "net_delta": 280.0, "delta_pct": 28.0, "cvd_bias": "BUY_ABSORPTION", "source": "DEMO_FOOTPRINT"}
+
+        okx_sym = sym[:-4] + "-USDT-SWAP" if sym.endswith("USDT") else sym
+        data = _http_get_json(f"https://www.okx.com/api/v5/market/trades?instId={urllib.parse.quote(okx_sym)}&limit=100", timeout=4.0)
+        rows = (data or {}).get("data") or []
+        buy_v = 0.0
+        sell_v = 0.0
+        for r in rows:
+            try:
+                sz = float(r.get("sz") or 0) * float(r.get("px") or 1)
+                if str(r.get("side") or "").lower() == "buy":
+                    buy_v += sz
+                else:
+                    sell_v += sz
+            except Exception:
+                continue
+        tot = buy_v + sell_v
+        if tot <= 0:
+            return {"symbol": sym, "buy_vol": 0.0, "sell_vol": 0.0, "net_delta": 0.0, "delta_pct": 0.0, "cvd_bias": "NEUTRAL", "source": "UNAVAILABLE"}
+        delta = buy_v - sell_v
+        dpct = round((delta / tot) * 100.0, 2)
+        bias = "BUY_ABSORPTION" if dpct >= 10.0 else ("SELL_ABSORPTION" if dpct <= -10.0 else "NEUTRAL")
+        return {
+            "symbol": sym, "buy_vol": round(buy_v, 2), "sell_vol": round(sell_v, 2),
+            "net_delta": round(delta, 2), "delta_pct": dpct, "cvd_bias": bias, "source": "OKX_TICK_FOOTPRINT",
+        }
+
+    def get_crowd_positioning(self, symbol: str) -> Dict[str, Any]:
+        """Fetches free OKX Retail Long/Short Account Ratio to detect crowded retail traps."""
+        sym = symbol.upper()
+        ccy = sym[:-4] if sym.endswith("USDT") else sym
+        if self.demo_mode:
+            return {"symbol": sym, "long_short_ratio": 1.15, "crowd_state": "BALANCED", "source": "DEMO"}
+        data = _http_get_json(f"https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy={urllib.parse.quote(ccy)}&period=5m", timeout=4.0)
+        rows = (data or {}).get("data") or []
+        if rows:
+            try:
+                ratio = float(rows[0][1])
+                state = "CROWDED_LONGS" if ratio >= 1.85 else ("CROWDED_SHORTS" if ratio <= 0.65 else "BALANCED")
+                return {"symbol": sym, "long_short_ratio": round(ratio, 2), "crowd_state": state, "source": "OKX_RUBIK"}
+            except Exception:
+                pass
+        return {"symbol": sym, "long_short_ratio": 1.0, "crowd_state": "BALANCED", "source": "UNAVAILABLE"}
 
     # --- Deterministic Demo Mode (strictly for offline tests) ---
     def _demo_tickers(self) -> Dict[str, CryptoTicker]:
