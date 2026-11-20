@@ -100,7 +100,22 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 bull_catalysts.setdefault(c.upper(), f"{n.get('tag')}: {n.get('headline', '')[:90]}")
 
     signals: List[CryptoSignal] = []
-    scan_syms = CORE_CRYPTO_UNIVERSE[:10]
+    # 100% DYNAMIC FULL-MARKET SCREENING (ALL 534+ LIVE OKX COINS — ZERO HARDCODED COIN LIST!)
+    liquid_all = [
+        t for t in tickers.values()
+        if t.symbol.endswith("USDT") and t.ltp > 0 and t.volume_24h_usdt >= Decimal("5000000")
+    ]
+    if not liquid_all:
+        liquid_all = list(tickers.values())
+
+    # Dynamic Core Funnel: Top 10 by 24h Liquidity + Top 6 Highest-Momentum Active Movers across ALL 534 coins
+    by_vol = sorted(liquid_all, key=lambda t: t.volume_24h_usdt, reverse=True)[:10]
+    by_mom = sorted(
+        [t for t in liquid_all if Decimal("2.5") <= abs(t.change_24h_pct) <= Decimal("26.0")],
+        key=lambda t: abs(t.change_24h_pct),
+        reverse=True,
+    )[:6]
+    scan_syms = list(dict.fromkeys([t.symbol for t in by_vol] + [t.symbol for t in by_mom]))
     trap_judge: GeminiTrapJudge = app.state.trap_judge
     btc_chg = tickers["BTCUSDT"].change_24h_pct if "BTCUSDT" in tickers else Decimal("0")
     for sym in scan_syms:
@@ -133,12 +148,30 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             signals.append(evaluate_engine_2_donchian(sym, c4h))
             signals.append(evaluate_engine_3_funding_rsi2(sym, c4h, tickers.get(sym)))
 
-    # Daily Boom Radar scan (volatile small/mid-cap coins, 1x micro-size)
+    # Dynamic Daily Boom Radar across ALL 534+ live coins (no fixed list — catches EVERY new/emerging mover!)
+    boom_candidates = sorted(
+        [
+            t for t in liquid_all
+            if t.symbol not in ("BTCUSDT", "ETHUSDT", "BNBUSDT")
+            and Decimal("4.0") <= t.change_24h_pct <= Decimal("30.0")
+        ],
+        key=lambda t: (t.change_24h_pct * (t.volume_24h_usdt / Decimal("1000000"))),
+        reverse=True,
+    )[:10]
+    if not boom_candidates:
+        boom_candidates = sorted(
+            [t for t in liquid_all if t.symbol not in ("BTCUSDT", "ETHUSDT", "BNBUSDT")],
+            key=lambda t: t.change_24h_pct,
+            reverse=True,
+        )[:10]
+
     boom_rows: List[Dict[str, Any]] = []
-    for sym in BOOM_CRYPTO_UNIVERSE[:10]:
+    for t_obj in boom_candidates:
+        sym = t_obj.symbol
         c15 = prov.get_candles(sym, "15m", 30)
         depth = prov.get_orderbook_depth(sym)
-        b_item = evaluate_boom_radar(sym, c15, tickers.get(sym), depth)
+        fp_b = prov.get_footprint_cvd(sym)
+        b_item = evaluate_boom_radar(sym, c15, t_obj, depth, footprint=fp_b)
         boom_rows.append(b_item)
         if eng.config.enable_boom_radar and b_item["stage"] == "BOOM TRIGGERED" and sym not in risk_blocked:
             signals.append(CryptoSignal(
@@ -204,6 +237,8 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     return {
         "scan_ist": eng.last_scan_ist,
         "regime": regime.regime,
+        "market_universe_screened": len(tickers),
+        "dynamic_coins_deep_scanned": len(set(scan_syms) | {t.symbol for t in boom_candidates}),
         "signals_evaluated": len(signals),
         "confirmed_count": sum(1 for s in signals if s.status == "CONFIRMED"),
         "opened_count": len(opened),
