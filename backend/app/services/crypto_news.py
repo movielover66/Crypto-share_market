@@ -158,3 +158,60 @@ class CryptoTelegramNotifier:
         except Exception as exc:
             self.last_error = type(exc).__name__
             return {"delivered": False, "error": self.last_error}
+
+
+class GeminiTrapJudge:
+    """
+    Hybrid AI Stop-Hunt & Trap Veto Judge.
+    Receives ONLY deterministic quantitative order-flow features (Footprint CVD, Sweep, 24h Exhaustion,
+    Retail Long/Short Ratio, L2 Depth) and outputs APPROVE or VETO_TRAP.
+    Fails open to deterministic trap veto if Gemini API key is missing or offline.
+    """
+
+    def __init__(self, api_keys_csv: str = "") -> None:
+        self.keys = [k.strip() for k in (api_keys_csv or "").split(",") if k.strip() and not k.strip().startswith("YOUR_")]
+        self.enabled = bool(self.keys)
+        self.last_verdict: Optional[str] = None
+
+    def evaluate_trade(self, features: Dict[str, Any]) -> Dict[str, Any]:
+        # Deterministic fast trap check first (always active even without Gemini key)
+        chg24 = float(features.get("change_24h_pct", 0.0))
+        direction = str(features.get("direction", "LONG")).upper()
+        dpct = float(features.get("footprint_delta_pct", 0.0))
+        engine = str(features.get("engine_code", ""))
+
+        if direction == "SHORT" and chg24 <= -3.5 and engine != "ENGINE_4_SHADOW_SWEEP":
+            return {"verdict": "VETO_TRAP", "reason": f"Exhaustion trap: already down {chg24:.2f}% in 24h (bounce risk).", "source": "DETERMINISTIC_GUARD"}
+        if direction == "LONG" and chg24 >= 8.0 and engine not in ("BOOM_RADAR", "ENGINE_4_SHADOW_SWEEP"):
+            return {"verdict": "VETO_TRAP", "reason": f"Exhaustion trap: already up +{chg24:.2f}% in 24h (chase risk).", "source": "DETERMINISTIC_GUARD"}
+        if direction == "SHORT" and dpct >= 18.0:
+            return {"verdict": "VETO_TRAP", "reason": f"Footprint Buy Absorption (+{dpct}% delta) fighting SHORT.", "source": "FOOTPRINT_GUARD"}
+        if direction == "LONG" and dpct <= -18.0:
+            return {"verdict": "VETO_TRAP", "reason": f"Footprint Sell Absorption ({dpct}% delta) fighting LONG.", "source": "FOOTPRINT_GUARD"}
+
+        if not self.enabled:
+            return {"verdict": "APPROVE", "reason": "Passed deterministic order-flow & exhaustion guard.", "source": "DETERMINISTIC_GUARD"}
+
+        prompt = (
+            "You are an institutional crypto order-flow risk judge. Evaluate whether this trade is a retail stop-hunt trap. "
+            'Respond ONLY with valid JSON: {"verdict":"APPROVE" or "VETO_TRAP", "reason":"<15 words>"}.\n'
+            f"Data: {json.dumps(features)}"
+        )
+        for model in ("gemini-2.5-flash", "gemini-2.0-flash"):
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={urllib.parse.quote(self.keys[0])}"
+            body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=8.0) as resp:
+                    raw = json.loads(resp.read().decode("utf-8"))
+                txt = raw["candidates"][0]["content"]["parts"][0]["text"]
+                m = re.search(r"\{[^}]+\}", txt)
+                if m:
+                    parsed = json.loads(m.group(0))
+                    v = str(parsed.get("verdict", "APPROVE")).upper()
+                    if v in ("APPROVE", "VETO_TRAP"):
+                        self.last_verdict = f"{features.get('symbol')}: {v}"
+                        return {"verdict": v, "reason": str(parsed.get("reason", ""))[:120], "source": f"GEMINI_{model}"}
+            except Exception:
+                continue
+        return {"verdict": "APPROVE", "reason": "Passed deterministic guard (Gemini fallback).", "source": "DETERMINISTIC_FALLBACK"}
