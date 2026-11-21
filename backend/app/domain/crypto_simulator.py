@@ -14,6 +14,8 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from .crypto_engines import CryptoRegime, CryptoSignal, _quant
+from ..core.strategy_config import StrategyConfig
+from .portfolio_manager import compute_equal_risk_sizing
 
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -52,6 +54,8 @@ class CryptoPaperPosition:
     opened_at_ist: str = ""
     closed_at_ist: Optional[str] = None
     tg_message_id: Optional[int] = None
+    bias_tag: str = "TREND_ALIGNED"
+    planned_risk_inr: Decimal = Decimal("500.00")
 
 
 @dataclass
@@ -60,7 +64,7 @@ class CryptoTraderConfig:
     starting_usdt: Decimal = Decimal("1000.00")
     per_trade_usdt: Decimal = Decimal("200.00")
     max_leverage: Decimal = Decimal("2.0")
-    max_open_positions: int = 8
+    max_open_positions: int = 0  # 0 = Unlimited Paper Mode (editable anytime)
     telegram_daily_cap: int = 6  # Elite 5-7/day cap
     elite_min_score: int = 85
     daily_loss_limit_pct: Decimal = Decimal("1.50")
@@ -97,6 +101,7 @@ class CryptoPaperEngine:
         self.last_signals: List[Dict[str, Any]] = []
         self.last_boom_items: List[Dict[str, Any]] = []
         self.last_scan_ist: Optional[str] = None
+        self.last_usdt_inr: Decimal = Decimal("93.37")
 
     def _reset_daily_tg_counter_if_needed(self, now_ist: datetime.datetime) -> None:
         today = now_ist.strftime("%Y-%m-%d")
@@ -117,7 +122,7 @@ class CryptoPaperEngine:
         if "telegram_daily_cap" in updates and updates["telegram_daily_cap"] is not None:
             c.telegram_daily_cap = max(1, min(15, int(updates["telegram_daily_cap"])))
         if "max_open_positions" in updates and updates["max_open_positions"] is not None:
-            c.max_open_positions = max(1, min(20, int(updates["max_open_positions"])))
+            c.max_open_positions = max(0, min(200, int(updates["max_open_positions"])))
         if "enable_boom_radar" in updates and updates["enable_boom_radar"] is not None:
             c.enable_boom_radar = bool(updates["enable_boom_radar"])
         if "enable_catalyst_radar" in updates and updates["enable_catalyst_radar"] is not None:
@@ -134,20 +139,42 @@ class CryptoPaperEngine:
         now_ist: datetime.datetime,
         paper_store: Optional[Any] = None,
         telegram_notifier: Optional[Any] = None,
-        usdt_inr: Decimal = Decimal("85.20"),
+        usdt_inr: Decimal = Decimal("93.37"),
+        strategy_cfg: Optional[StrategyConfig] = None,
+        risk_multiplier: Decimal = Decimal("1.00"),
+        bias_tag: str = "TREND_ALIGNED",
     ) -> CryptoPaperPosition:
         self._reset_daily_tg_counter_if_needed(now_ist)
+        if usdt_inr and usdt_inr > Decimal("50"):
+            self.last_usdt_inr = usdt_inr
+        eff_fx = self.last_usdt_inr
         is_boom = sig.horizon_bucket == "boom" or sig.engine_code == "BOOM_RADAR"
         lev = Decimal("1.0") if (is_boom or sig.engine_code == "CATALYST_MOMENTUM") else min(self.config.max_leverage, sig.recommended_leverage)
-        margin = (self.config.per_trade_usdt * Decimal("0.5") if is_boom else self.config.per_trade_usdt).quantize(Decimal("0.01"))
 
         fill = _quant(
             sig.entry_price * (Decimal("1") + SLIPPAGE_RATE)
             if sig.direction == "LONG"
             else sig.entry_price * (Decimal("1") - SLIPPAGE_RATE)
         )
-        notional = margin * lev
-        qty = (notional / fill).quantize(Decimal("0.0001")) if fill > 0 else Decimal("0")
+        # Bug #5 fix: Equal-Risk Volatility-Targeted Position Sizing (₹500 default, 0.5x counter-trend)
+        if strategy_cfg is not None:
+            margin, qty, planned_risk_inr = compute_equal_risk_sizing(
+                entry_price=fill,
+                stop_loss=sig.stop_loss,
+                leverage=lev,
+                usdt_inr=eff_fx,
+                risk_multiplier=risk_multiplier,
+                cfg=strategy_cfg,
+                fallback_margin_usdt=self.config.per_trade_usdt,
+                is_boom=is_boom,
+            )
+            notional = margin * lev
+        else:
+            margin = (self.config.per_trade_usdt * Decimal("0.5") if is_boom else self.config.per_trade_usdt).quantize(Decimal("0.01"))
+            notional = margin * lev
+            qty = (notional / fill).quantize(Decimal("0.0001")) if fill > 0 else Decimal("0")
+            sl_dist = (abs(fill - sig.stop_loss) / fill) if fill > 0 else Decimal("0.02")
+            planned_risk_inr = (notional * sl_dist * eff_fx).quantize(Decimal("0.01"))
         entry_fee = (notional * TAKER_FEE_RATE).quantize(Decimal("0.01"))
 
         # Decide Two-Tier status: ELITE_TG (capped 5-7/day) vs BACKEND_LAB
@@ -176,6 +203,8 @@ class CryptoPaperEngine:
             score=sig.score,
             rationale=sig.rationale,
             opened_at_ist=now_ist.isoformat(),
+            bias_tag=bias_tag,
+            planned_risk_inr=planned_risk_inr,
         )
         self.positions[pos.position_id] = pos
 
@@ -218,6 +247,8 @@ class CryptoPaperEngine:
         now_ist: datetime.datetime,
         paper_store: Optional[Any] = None,
         telegram_notifier: Optional[Any] = None,
+        usdt_inr: Optional[Decimal] = None,
+        disable_kill_switch: bool = False,
     ) -> Optional[CryptoPaperPosition]:
         pos = self.positions.get(position_id)
         if not pos or pos.status != "OPEN":
@@ -249,7 +280,7 @@ class CryptoPaperEngine:
             self.consecutive_losses += 1
         elif net > 0:
             self.consecutive_losses = 0
-        if self.consecutive_losses >= self.config.max_consecutive_losses:
+        if not disable_kill_switch and self.consecutive_losses >= self.config.max_consecutive_losses:
             self.kill_switch_active = True
             self.kill_switch_reason = f"Consecutive losses reached {self.consecutive_losses}."
 
@@ -265,7 +296,8 @@ class CryptoPaperEngine:
             is_boom_pos = pos.horizon_bucket == "boom" or pos.engine_code == "BOOM_RADAR"
             is_win = net >= 0
             pct_roi = ((net / pos.margin_usdt) * Decimal("100")).quantize(Decimal("0.01")) if pos.margin_usdt > 0 else Decimal("0.00")
-            inr_est = (net * Decimal("85.20")).quantize(Decimal("1"))
+            eff_fx = usdt_inr if (usdt_inr and usdt_inr > Decimal("50")) else self.last_usdt_inr
+            inr_est = (net * eff_fx).quantize(Decimal("1"))
             ts_str = now_ist.strftime("%d %b • %I:%M %p IST")
             if is_boom_pos:
                 cat = "BOOM_WIN" if is_win else "BOOM_LOSS"
@@ -307,7 +339,11 @@ class CryptoPaperEngine:
         now_ist: datetime.datetime,
         paper_store: Optional[Any] = None,
         telegram_notifier: Optional[Any] = None,
+        usdt_inr: Optional[Decimal] = None,
+        disable_kill_switch: bool = False,
     ) -> List[Dict[str, Any]]:
+        if usdt_inr and usdt_inr > Decimal("50"):
+            self.last_usdt_inr = usdt_inr
         actions: List[Dict[str, Any]] = []
         for pos in list(self.positions.values()):
             if pos.status != "OPEN":
@@ -325,14 +361,14 @@ class CryptoPaperEngine:
 
             hit_target = (ltp >= pos.target_price) if pos.direction == "LONG" else (ltp <= pos.target_price)
             if hit_target:
-                self.close_position(pos.position_id, ltp, "TARGET_HIT", now_ist, paper_store, telegram_notifier)
+                self.close_position(pos.position_id, ltp, "TARGET_HIT", now_ist, paper_store, telegram_notifier, usdt_inr=self.last_usdt_inr, disable_kill_switch=disable_kill_switch)
                 actions.append({"action": "TARGET_HIT", "symbol": pos.symbol, "net_pnl_usdt": str(pos.net_pnl_usdt)})
                 continue
 
             hit_sl = (ltp <= pos.stop_loss) if pos.direction == "LONG" else (ltp >= pos.stop_loss)
             if hit_sl:
                 reason = "TRAILING_SL_HIT" if pos.trailing_active else ("BREAKEVEN_SL_HIT" if pos.breakeven_shifted else "STOP_LOSS_HIT")
-                self.close_position(pos.position_id, ltp, reason, now_ist, paper_store, telegram_notifier)
+                self.close_position(pos.position_id, ltp, reason, now_ist, paper_store, telegram_notifier, usdt_inr=self.last_usdt_inr, disable_kill_switch=disable_kill_switch)
                 actions.append({"action": reason, "symbol": pos.symbol, "net_pnl_usdt": str(pos.net_pnl_usdt)})
                 continue
 
@@ -394,6 +430,8 @@ class CryptoPaperEngine:
                 "unrealised_net_usdt": str(mtm_net),
                 "unrealised_net_inr": str((mtm_net * usdt_inr).quantize(Decimal("0.01"))),
                 "score": p.score,
+                "bias_tag": p.bias_tag,
+                "planned_risk_inr": str(p.planned_risk_inr),
                 "rationale": p.rationale,
                 "opened_at_ist": p.opened_at_ist,
             })

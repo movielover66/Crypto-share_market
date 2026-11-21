@@ -297,7 +297,8 @@ class MarketBrainEngine:
         if self.current_directive is None:
             return True, None
 
-        # Update live telemetry fields immediately every 10s
+        # Capture previous BTC 24h delta BEFORE updating live telemetry (Bug #2 fix)
+        prev_btc_chg = self.current_directive.btc_chg_24h
         self.current_directive.btc_chg_24h = round(btc_chg, 2)
         self.current_directive.eth_chg_24h = round(eth_chg, 2)
         self.current_directive.breadth_green_pct = green_pct
@@ -308,8 +309,8 @@ class MarketBrainEngine:
         if btc_chg <= -5.0 and red_pct >= 72.0 and self.current_directive.mode != "SEVERE_CRASH":
             return True, self.current_directive
 
-        # Sudden major move (> 1.5% BTC shift since last deep sync) -> trigger immediate deep sync
-        if abs(btc_chg - self.current_directive.btc_chg_24h) >= 1.5:
+        # Sudden major move (>= 1.5% BTC shift since last pulse/deep sync) -> trigger immediate deep sync
+        if abs(btc_chg - prev_btc_chg) >= 1.5:
             return True, self.current_directive
 
         return False, self.current_directive
