@@ -310,21 +310,27 @@ class MultiExchangeCryptoProvider:
         if cached and (time.time() - cached[0]) < 10.0:
             return cached[1]
 
-        # 1. Primary: OKX v5 L2 Orderbook Depth (5-Level Bid/Ask)
+        # 1. Primary: OKX v5 50-Level L2 DOM Orderbook (extracts exact Bid & Ask Liquidity Walls)
         okx_sym = sym[:-4] + "-USDT-SWAP" if sym.endswith("USDT") else sym
-        odata = _http_get_json(f"https://www.okx.com/api/v5/market/books?instId={urllib.parse.quote(okx_sym)}&sz=5", timeout=4.0)
+        odata = _http_get_json(f"https://www.okx.com/api/v5/market/books?instId={urllib.parse.quote(okx_sym)}&sz=50", timeout=4.0)
         ob_list = (odata or {}).get("data") or []
         if ob_list:
             bids = ob_list[0].get("bids") or []
             asks = ob_list[0].get("asks") or []
             if bids and asks:
-                buy_q = sum(float(x[1]) for x in bids[:5])
-                sell_q = sum(float(x[1]) for x in asks[:5])
+                buy_q = sum(float(x[1]) * float(x[0]) for x in bids[:25])
+                sell_q = sum(float(x[1]) * float(x[0]) for x in asks[:25])
                 tot = max(1e-9, buy_q + sell_q)
                 buy_pct = round((buy_q / tot) * 100, 1)
                 pressure = "BUY_IMBALANCE" if buy_pct >= 58 else ("SELL_IMBALANCE" if buy_pct <= 42 else "BALANCED")
+                best_bid_wall = max(bids[:50], key=lambda x: float(x[1]) * float(x[0]))
+                best_ask_wall = max(asks[:50], key=lambda x: float(x[1]) * float(x[0]))
                 out = {
-                    "symbol": sym, "source": "OKX_L2", "buy_pct": buy_pct, "pressure": pressure,
+                    "symbol": sym, "source": "OKX_L2_50", "buy_pct": buy_pct, "pressure": pressure,
+                    "big_bid_wall_px": round(float(best_bid_wall[0]), 6),
+                    "big_bid_wall_usdt": round(float(best_bid_wall[1]) * float(best_bid_wall[0]), 2),
+                    "big_ask_wall_px": round(float(best_ask_wall[0]), 6),
+                    "big_ask_wall_usdt": round(float(best_ask_wall[1]) * float(best_ask_wall[0]), 2),
                     "bids": [{"price": x[0], "qty": x[1]} for x in bids[:5]],
                     "asks": [{"price": x[0], "qty": x[1]} for x in asks[:5]],
                 }
@@ -461,6 +467,8 @@ class MultiExchangeCryptoProvider:
             "source": "DEMO_L2",
             "buy_pct": 66.5,
             "pressure": "BUY_IMBALANCE",
+            "big_bid_wall_px": round(base * 0.985, 6), "big_bid_wall_usdt": 420000.0,
+            "big_ask_wall_px": round(base * 1.045, 6), "big_ask_wall_usdt": 380000.0,
             "bids": [{"price": f"{base - i * step:.4f}", "qty": f"{12.5 * i:.2f}"} for i in range(1, 6)],
             "asks": [{"price": f"{base + i * step:.4f}", "qty": f"{6.8 * i:.2f}"} for i in range(1, 6)],
         }
