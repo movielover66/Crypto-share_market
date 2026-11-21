@@ -446,9 +446,9 @@ class GeminiTrapJudge:
         dpct = float(features.get("footprint_delta_pct", 0.0))
         engine = str(features.get("engine_code", ""))
 
-        if direction == "SHORT" and chg24 <= -3.5 and engine not in ("ENGINE_4_SHADOW_SWEEP", "ENGINE_5_CRASH_SHORT"):
+        if direction == "SHORT" and chg24 <= -6.0:  # v2.1 Zero-Bypass: no blind bottom shorting for ANY engine
             return {"verdict": "VETO_TRAP", "reason": f"Exhaustion trap: already down {chg24:.2f}% in 24h (bounce risk).", "source": "DETERMINISTIC_GUARD"}
-        if direction == "LONG" and chg24 >= 8.0 and engine not in ("BOOM_RADAR", "ENGINE_4_SHADOW_SWEEP"):
+        if direction == "LONG" and chg24 >= 10.0:  # v2.1 Zero-Bypass: no blind top chasing for ANY engine
             return {"verdict": "VETO_TRAP", "reason": f"Exhaustion trap: already up +{chg24:.2f}% in 24h (chase risk).", "source": "DETERMINISTIC_GUARD"}
         if direction == "SHORT" and dpct >= 18.0:
             return {"verdict": "VETO_TRAP", "reason": f"Footprint Buy Absorption (+{dpct}% delta) fighting SHORT.", "source": "FOOTPRINT_GUARD"}
@@ -481,3 +481,100 @@ class GeminiTrapJudge:
             except Exception:
                 continue
         return {"verdict": "APPROVE", "reason": "Passed deterministic guard (Gemini fallback).", "source": "DETERMINISTIC_FALLBACK"}
+
+    def render_chart_snapshot_png(
+        self,
+        symbol: str,
+        candles: List[Any],
+        price_map: Dict[str, Any],
+    ) -> Optional[bytes]:
+        """Renders a compact 640x360 annotated candlestick PNG in memory via Pillow for Gemini Vision."""
+        try:
+            import io
+            from PIL import Image, ImageDraw
+        except Exception:
+            return None
+        if not candles or len(candles) < 10:
+            return None
+        bars = candles[-30:]
+        W, H = 640, 360
+        img = Image.new("RGB", (W, H), (7, 11, 20))
+        dr = ImageDraw.Draw(img)
+        lows = [float(c.low) for c in bars]
+        highs = [float(c.high) for c in bars]
+        lo, hi = min(lows), max(highs)
+        span = max(1e-9, hi - lo)
+        pad_l, pad_r, pad_t, pad_b = 16, 70, 28, 24
+        plot_w = W - pad_l - pad_r
+        plot_h = H - pad_t - pad_b
+        y_of = lambda p: int(pad_t + ((hi - p) / span) * plot_h)
+        step = plot_w / len(bars)
+
+        # Draw POC / Structural SL / TP horizontal guides
+        for key, col in (("poc", (245, 183, 0)), ("structural_sl", (255, 59, 92)), ("structural_tp", (0, 230, 118))):
+            val = float(price_map.get(key) or 0)
+            if lo <= val <= hi:
+                yy = y_of(val)
+                dr.line([(pad_l, yy), (W - pad_r, yy)], fill=col, width=1)
+
+        for i, c in enumerate(bars):
+            cx = int(pad_l + i * step + step * 0.5)
+            o, h, l, cl = float(c.open), float(c.high), float(c.low), float(c.close)
+            col = (0, 230, 118) if cl >= o else (255, 59, 92)
+            dr.line([(cx, y_of(h)), (cx, y_of(l))], fill=col, width=1)
+            bw = max(2, int(step * 0.35))
+            dr.rectangle([cx - bw, min(y_of(o), y_of(cl)), cx + bw, max(y_of(o), y_of(cl)) + 1], fill=col)
+
+        dr.text((16, 6), f"{symbol} | 12-Pt Map | POC {price_map.get('poc')} | CVD {price_map.get('cvd_pct')}%", fill=(226, 232, 240))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def evaluate_chart_vision(
+        self,
+        symbol: str,
+        direction: str,
+        candles: List[Any],
+        price_map: Dict[str, Any],
+        features: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Gate 5 Multimodal Audit: feeds annotated Chart PNG + 12-Point Price Map to Gemini Vision."""
+        base_v = self.evaluate_trade(features)
+        if base_v.get("verdict") == "VETO_TRAP":
+            return base_v
+        if not self.enabled:
+            return {"verdict": "APPROVE", "confidence": 84, "reason": "12-Point Deterministic Audit Passed", "source": "DETERMINISTIC_12PT"}
+
+        png_bytes = self.render_chart_snapshot_png(symbol, candles, price_map)
+        parts: List[Dict[str, Any]] = [{
+            "text": (
+                "You are a 35-year institutional crypto chart reader. Inspect this candlestick chart and 12-point order-flow map. "
+                "Check for overhead resistance walls, trap wicks, and room-to-run. "
+                'Respond ONLY JSON: {"verdict":"APPROVE" or "VETO_TRAP", "confidence":0-100, "reason":"<15 words>"}.\n'
+                f"Direction: {direction} | Map: {json.dumps(price_map)} | Features: {json.dumps(features)}"
+            )
+        }]
+        if png_bytes:
+            import base64
+            parts.append({"inline_data": {"mime_type": "image/png", "data": base64.b64encode(png_bytes).decode("ascii")}})
+
+        for model in ("gemini-2.5-flash", "gemini-2.0-flash"):
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={urllib.parse.quote(self.keys[0])}"
+            body = json.dumps({"contents": [{"parts": parts}]}).encode("utf-8")
+            req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=9.0) as resp:
+                    raw = json.loads(resp.read().decode("utf-8"))
+                txt = raw["candidates"][0]["content"]["parts"][0]["text"]
+                m = re.search(r"\{[^}]+\}", txt)
+                if m:
+                    parsed = json.loads(m.group(0))
+                    v = str(parsed.get("verdict", "APPROVE")).upper()
+                    conf = int(parsed.get("confidence", 82))
+                    if v == "VETO_TRAP" or conf < 80:
+                        return {"verdict": "VETO_TRAP", "confidence": conf, "reason": str(parsed.get("reason", "Low AI confidence"))[:120], "source": f"GEMINI_VISION_{model}"}
+                    return {"verdict": "APPROVE", "confidence": conf, "reason": str(parsed.get("reason", ""))[:120], "source": f"GEMINI_VISION_{model}"}
+            except Exception:
+                continue
+        return {"verdict": "APPROVE", "confidence": 82, "reason": "12-Point Guard Passed (Vision fallback)", "source": "VISION_FALLBACK"}
+
