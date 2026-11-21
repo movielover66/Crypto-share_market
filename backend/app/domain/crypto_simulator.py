@@ -373,7 +373,7 @@ class CryptoPaperEngine:
                 continue
 
             # 1.5R Charge-Buffered Breakeven
-            if not pos.breakeven_shifted and live_r >= Decimal("1.50"):
+            if not pos.breakeven_shifted and live_r >= Decimal("1.00"):
                 buf = pos.entry_fill_price * Decimal("0.0018")
                 be = _quant(pos.entry_fill_price + buf if pos.direction == "LONG" else pos.entry_fill_price - buf)
                 if (pos.direction == "LONG" and be > pos.stop_loss) or (pos.direction == "SHORT" and be < pos.stop_loss):

@@ -246,7 +246,12 @@ class MarketBrainEngine:
             self.pending_count = 0
             return cur
 
-        # 15-point exit buffer out of SEVERE_CRASH (-45 -> must recover above -30)
+        # v2.1 Rebound Guard: exit SEVERE_CRASH immediately when score recovers >= -25
+        if cur == "SEVERE_CRASH" and raw_score >= -25:
+            self.pending_mode = None
+            self.pending_count = 0
+            return candidate
+        # Exit buffer out of SEVERE_CRASH (-45 -> must recover above -30)
         if cur == "SEVERE_CRASH" and raw_score < -30:
             self.pending_mode = None
             self.pending_count = 0

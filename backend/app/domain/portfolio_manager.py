@@ -49,9 +49,13 @@ def evaluate_soft_bias(
     if trend_ok:
         return BiasDecision(True, Decimal("1.00"), "TREND_ALIGNED", f"{d} aligned with Brain ({brain_dir.mode})")
 
-    # Specialist Crash Short allowed in DOWNTREND / SEVERE_CRASH
-    if engine_code == "ENGINE_5_CRASH_SHORT" and d == "SHORT":
-        return BiasDecision(True, Decimal("1.00"), "CRASH_SPECIALIST", "Engine 5 Crash Short active")
+    # v2.1 Zero-Bypass Rule: ENGINE_5_CRASH_SHORT only allowed when Brain actually allows shorts
+    if engine_code == "ENGINE_5_CRASH_SHORT" and d == "SHORT" and brain_dir.mode not in ("DOWNTREND", "SEVERE_CRASH"):
+        return BiasDecision(False, Decimal("0.00"), "CRASH_EXPIRED", f"Crash Short blocked in {brain_dir.mode}")
+
+    # Unger Chop Filter: block trend breakouts in choppy Hurst < 0.48 markets
+    if getattr(brain_dir, "hurst", 0.55) < 0.48 and engine_code in ("ENGINE_1_BREAKOUT", "ENGINE_2_DONCHIAN"):
+        return BiasDecision(False, Decimal("0.00"), "UNGER_CHOP_BLOCK", f"Choppy market (Hurst {brain_dir.hurst} < 0.48)")
 
     if not cfg.soft_bias_enabled:
         return BiasDecision(False, Decimal("0.00"), "HARD_LOCKED", f"{d} blocked in {brain_dir.mode} (Soft Bias OFF)")
@@ -61,7 +65,7 @@ def evaluate_soft_bias(
         (d == "LONG" and fp_delta >= cfg.counter_trend_min_abs_cvd)
         or (d == "SHORT" and fp_delta <= -cfg.counter_trend_min_abs_cvd)
     )
-    if score >= cfg.counter_trend_min_score and (cvd_confirms or engine_code == "ENGINE_4_SHADOW_SWEEP"):
+    if score >= cfg.counter_trend_min_score and cvd_confirms:
         mult = cfg.counter_trend_risk_multiplier
         return BiasDecision(
             True,

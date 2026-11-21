@@ -136,8 +136,9 @@ def evaluate_engine_1_breakout(
     if len(c15) < 20:
         return CryptoSignal(symbol, "ENGINE_1_BREAKOUT", "intraday", "Intraday • 2–12 hrs (Session Breakout)", "LONG", "REJECTED", 0, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("2"), [], ["Insufficient 15m candles"], "Not enough 15m candles.")
 
-    last = c15[-1]
-    prior = c15[-17:-1]
+    # v2.1 Closed-Candle Rule: evaluate c15[-2] (fully closed), never live forming c15[-1]
+    last = c15[-2]
+    prior = c15[-18:-2]
     range_hi = max(c.high for c in prior)
     range_lo = min(c.low for c in prior)
     vwap = _vwap(c15[-24:])
@@ -413,8 +414,9 @@ def evaluate_engine_4_shadow_sweep(
     if len(c15) < 25:
         return CryptoSignal(symbol, "ENGINE_4_SHADOW_SWEEP", "intraday", "Shadow Sweep • 2–12 hrs", "LONG", "REJECTED", 0, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("1.5"), [], ["Insufficient 15m candles"], "Need 25+ 15m candles.")
 
-    last = c15[-1]
-    prior = c15[-22:-1]
+    # v2.1 Closed-Candle Rule: prevent mid-candle fake sweep wicks
+    last = c15[-2]
+    prior = c15[-23:-2]
     swing_lo = min(c.low for c in prior)
     swing_hi = max(c.high for c in prior)
     rng = max(Decimal("0.00000001"), last.high - last.low)
@@ -497,9 +499,10 @@ def evaluate_engine_5_crash_short(
     if btc_chg_24h > Decimal("-4.0") and not macro_reason:
         return CryptoSignal(symbol, "ENGINE_5_CRASH_SHORT", "intraday", "Crash Momentum • 2–12 hrs", "SHORT", "REJECTED", 20, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("1.5"), [], ["No active BTC crash regime"], "BTC not in crash regime.")
 
-    last15 = c15[-1]
-    closes15 = [c.close for c in c15]
-    closes1h = [c.close for c in c1h]
+    # v2.1 Closed-Candle Rule: evaluate fully closed 15m/1h bars
+    last15 = c15[-2]
+    closes15 = [c.close for c in c15[:-1]]
+    closes1h = [c.close for c in c1h[:-1]]
     ema20_15 = _ema(closes15, 20) or last15.close
     ema20_1h = _ema(closes1h, 20) or c1h[-1].close
     atr15 = _atr(c15, 14)
@@ -515,7 +518,7 @@ def evaluate_engine_5_crash_short(
         failed.append("1h Above EMA-20")
 
     # Dead-cat bounce rejection off 15m EMA-20 OR fresh 6-bar breakdown
-    prior6_low = min(c.low for c in c15[-7:-1])
+    prior6_low = min(c.low for c in c15[-8:-2])
     bounce_reject = (last15.high >= ema20_15 * Decimal("0.994")) and (last15.close < last15.open) and (last15.close < ema20_15 * Decimal("1.002"))
     fresh_breakdown = last15.close < prior6_low and last15.close < last15.open
     if bounce_reject:
