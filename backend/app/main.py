@@ -875,7 +875,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/v1/crypto/chart/{symbol}")
-    async def crypto_chart(symbol: str, interval: str = Query("1m"), _owner: str = Depends(require_owner)):
+    async def crypto_chart(symbol: str, interval: str = Query("1m"), direction: str = Query("LONG"), _owner: str = Depends(require_owner)):
         sym = symbol.upper()
         candles = await asyncio.to_thread(app.state.provider.get_candles, sym, interval, 100)
         depth = await asyncio.to_thread(app.state.provider.get_orderbook_depth, sym)
@@ -885,7 +885,7 @@ def create_app() -> FastAPI:
         c1h = await asyncio.to_thread(app.state.provider.get_candles, sym, "1h", 35)
         c4h = await asyncio.to_thread(app.state.provider.get_candles, sym, "4h", 35)
         btc_1h = await asyncio.to_thread(app.state.provider.get_candles, "BTCUSDT", "1h", 30)
-        cr_long = evaluate_12pt_chart_read(sym, "LONG", c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode)
+        cr_long = evaluate_12pt_chart_read(sym, direction, c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode)
         cver = app.state.coin_verifier.verify_symbol(sym, t_obj.volume_24h_usdt if t_obj else Decimal("0"))
         return {
             "symbol": sym,
@@ -1050,6 +1050,16 @@ def create_app() -> FastAPI:
                 {"name": "Gemini Stop-Hunt Trap Judge", "ok": True, "detail": "Gemini AI + Deterministic Trap Veto Active" if app.state.trap_judge.enabled else "Deterministic Trap Veto Active (Add GEMINI_API_KEYS for AI)"},
                 {"name": "24/7 Autonomous Scheduler", "ok": bool(app.state._scheduler_task) or cfg.app_env == "test", "detail": "5m Scan • 30s Live Guard"},
             ],
+        }
+
+    @app.post("/api/v1/telegram/reset-counter")
+    async def reset_tg_counter(_owner: str = Depends(require_owner)):
+        app.state.engine.tg_sent_today = 0
+        app.state.engine.tg_sent_date = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+        return {
+            "reset": True,
+            "tg_sent_today": 0,
+            "tg_daily_cap": app.state.engine.config.telegram_daily_cap,
         }
 
     @app.post("/api/v1/telegram/test")
