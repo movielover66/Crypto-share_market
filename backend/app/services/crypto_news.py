@@ -268,8 +268,17 @@ class CryptoCatalystNewsService:
                 mapped = coins
                 break
 
-        risk_words = ("hack", "exploit", "drain", "delist", "bankrupt", "lawsuit", "sec sues", "crash", "rug")
-        bull_words = ("surge", "rally", "approv", "etf inflow", "adopt", "launch", "partnership", "breakout", "rate cut", "bull")
+        risk_words = (
+            "hack", "exploit", "drain", "delist", "bankrupt", "lawsuit", "sec sues", "crash", "rug",
+            "plunge", "tumble", "slump", "slide", "sell-off", "selloff", "outflow", "liquidat",
+            "rate hike", "hawkish", "bearish", "extreme fear", "drops below", "falls below", "slips below",
+            "panic", "wipeout", "bleed", "correction", "tariff", "inflation fears",
+        )
+        bull_words = (
+            "surge", "rally", "approv", "etf inflow", "inflow", "adopt", "launch", "partnership",
+            "breakout", "rate cut", "dovish", "bullish", "bull", "rebound", "recover", "soar",
+            "all-time high", "ath", "accumulat", "whale buy", "strategic reserve", "record high",
+        )
         if any(w in tl for w in risk_words):
             impact = "HIGH_RISK"
         elif any(w in tl for w in bull_words):
@@ -437,7 +446,7 @@ class GeminiTrapJudge:
         dpct = float(features.get("footprint_delta_pct", 0.0))
         engine = str(features.get("engine_code", ""))
 
-        if direction == "SHORT" and chg24 <= -3.5 and engine != "ENGINE_4_SHADOW_SWEEP":
+        if direction == "SHORT" and chg24 <= -3.5 and engine not in ("ENGINE_4_SHADOW_SWEEP", "ENGINE_5_CRASH_SHORT"):
             return {"verdict": "VETO_TRAP", "reason": f"Exhaustion trap: already down {chg24:.2f}% in 24h (bounce risk).", "source": "DETERMINISTIC_GUARD"}
         if direction == "LONG" and chg24 >= 8.0 and engine not in ("BOOM_RADAR", "ENGINE_4_SHADOW_SWEEP"):
             return {"verdict": "VETO_TRAP", "reason": f"Exhaustion trap: already up +{chg24:.2f}% in 24h (chase risk).", "source": "DETERMINISTIC_GUARD"}
