@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TRADEIQ Crypto Pro v1.0 — 24/7 INR Desk &amp; Spot Vault</title>
+  <title>TRADEIQ Crypto Pro v2.0 — 6-Layer INR Desk &amp; Spot Vault</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -543,6 +543,23 @@
       showToast('Settings saved');
       await refreshCore();
     };
+    window.saveStrategyCfg = async () => {
+      const unlim = document.getElementById('s-unlim').value === 'true';
+      const maxPos = unlim ? 0 : Math.max(1, Number(document.getElementById('s-maxpos').value || 5));
+      await apiFetch('/api/v1/crypto/strategy-config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          unlimited_paper_mode: unlim,
+          max_open_positions: maxPos,
+          risk_per_trade_inr: Number(document.getElementById('s-risk').value || 500),
+          soft_bias_enabled: document.getElementById('s-softbias').value === 'true',
+          smc_filter_enabled: document.getElementById('s-smc').value === 'true',
+          sl_cooldown_hours: Number(document.getElementById('s-cool').value || 6),
+        })
+      });
+      showToast(unlim ? 'v2.0 Strategy saved (Unlimited Paper Mode ON)' : `v2.0 Strategy saved (Max ${maxPos} open)`);
+      await refreshCore();
+    };
 
     async function loadChart(rebuildLayout) {
       const r = await apiFetch(`/api/v1/crypto/chart/${encodeURIComponent(chartSym)}?interval=${encodeURIComponent(chartTf)}`);
@@ -692,7 +709,7 @@
               return `<div class="card p-4">
                 <div class="flex justify-between"><div><span class="text-base font-extrabold text-white">${p.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">${p.direction} ${p.leverage}x</span><div class="text-[11px] text-slate-400">${p.engine_code} • Margin ${fmtAmt(p.margin_usdt)}</div></div>
                 <div class="text-right mono"><div class="text-base font-extrabold ${nu>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(nu, true)}</div><div class="text-[10px] text-slate-400">≈ ${fmtAlt(nu, true)}</div></div></div>
-                <div class="mt-2 flex gap-1.5 flex-wrap"><span class="text-[10px] px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] font-semibold">⏱ ${p.hold_horizon}</span><span class="text-[10px] px-2 py-0.5 rounded ${p.tier==='ELITE_TG'?'bg-[#F5B700]/15 text-[#F5B700]':'bg-slate-800 text-slate-300'} font-bold">${p.tier==='ELITE_TG'?'⭐ ELITE TG':'🧪 BACKEND LAB'}</span></div>
+                <div class="mt-2 flex gap-1.5 flex-wrap"><span class="text-[10px] px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] font-semibold">⏱ ${p.hold_horizon}</span><span class="text-[10px] px-2 py-0.5 rounded ${p.tier==='ELITE_TG'?'bg-[#F5B700]/15 text-[#F5B700]':'bg-slate-800 text-slate-300'} font-bold">${p.tier==='ELITE_TG'?'⭐ ELITE TG':'🧪 BACKEND LAB'}</span><span class="text-[10px] px-2 py-0.5 rounded bg-[#A855F7]/15 text-[#D8B4FE] font-bold">${p.bias_tag||'TREND_ALIGNED'} • Risk ₹${Math.round(Number(p.planned_risk_inr||500))}</span></div>
                 <div class="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-[#1E293B] text-center text-xs mono">
                   <div><div class="text-[10px] text-slate-500">Entry</div>${fmtPx(p.entry_fill_price)}</div>
                   <div><div class="text-[10px] text-slate-500">LTP</div>${fmtPx(p.current_ltp)}</div>
@@ -915,8 +932,17 @@
           <div class="space-y-2.5">${catalystData.map(n => `<a href="${n.url||'#'}" target="_blank" rel="noreferrer" class="block card p-4"><div class="flex justify-between text-[10px]"><span class="font-bold text-[#F5B700]">${n.tag}</span><span class="text-slate-400">${n.source}</span></div><div class="text-sm font-bold text-white mt-1">${n.headline}</div><div class="mt-2 flex gap-1.5 flex-wrap text-[10px]">${(n.mapped_coins||[]).map(c=>`<span class="px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] mono font-bold">${c}</span>`).join('')}<span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 font-bold">${n.impact}</span></div></a>`).join('')}</div>`;
       } else if (section === 'lab') {
         const list = openPos.filter(p => labFilter==='ALL' || p.tier===labFilter);
-        el.innerHTML = `<div class="card p-4 flex justify-between items-center flex-wrap gap-2"><div><h2 class="text-base font-extrabold text-white">🧪 Backend Accuracy Lab vs ⭐ Telegram Elite</h2></div><div class="flex gap-1.5">${['ALL','ELITE_TG','BACKEND_LAB'].map(f=>`<button onclick="setLabF('${f}')" class="px-3 py-1 rounded-xl text-xs font-bold border ${labFilter===f?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${f}</button>`).join('')}</div></div>
-          <div class="space-y-2">${list.map(p=>`<div class="card p-3.5 flex justify-between items-center"><div><div class="text-sm font-bold text-white">${p.symbol} <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#141B2D] text-[#F5B700]">${p.tier}</span></div><div class="text-[11px] text-slate-400">${p.engine_code} • Score ${p.score}</div></div><div class="text-right mono text-sm font-bold ${Number(p.unrealised_net_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(p.unrealised_net_usdt, true)}</div></div>`).join('')}</div>`;
+        const scRows = (overview?.scorecard?.engines || []);
+        const scfgV2 = overview?.strategy_config || {};
+        el.innerHTML = `<div class="card p-4 flex justify-between items-center flex-wrap gap-2"><div><h2 class="text-base font-extrabold text-white">🧪 Backend Accuracy Lab &amp; Per-Engine Scorecard (v2.0)</h2><p class="text-[11px] text-slate-400 mt-0.5">Mode: <strong class="text-[#00E676]">${scfgV2.unlimited_paper_mode ? 'UNLIMITED PAPER LAB' : 'CAPPED ('+(scfgV2.max_open_positions||5)+' Max)'}</strong> • Equal-Risk ₹${scfgV2.risk_per_trade_inr||'500'} • Soft Bias ${scfgV2.soft_bias_enabled?'ON':'OFF'}</p></div><div class="flex gap-1.5">${['ALL','ELITE_TG','BACKEND_LAB'].map(f=>`<button onclick="setLabF('${f}')" class="px-3 py-1 rounded-xl text-xs font-bold border ${labFilter===f?'bg-[#00E676] text-[#04120B] border-[#00E676]':'bg-[#141B2D] text-slate-300 border-[#263449]'}">${f}</button>`).join('')}</div></div>
+          <div class="card p-4 overflow-x-auto">
+            <h3 class="text-sm font-extrabold text-white mb-2">🏆 Per-Engine Attribution Scorecard</h3>
+            <table class="w-full text-left text-xs">
+              <thead><tr class="text-[10px] text-slate-400 border-b border-[#1E293B]"><th class="py-1.5">Engine</th><th class="py-1.5 text-center">Open</th><th class="py-1.5 text-center">W / L</th><th class="py-1.5 text-right">Win %</th><th class="py-1.5 text-right">PF</th><th class="py-1.5 text-right">Net P&amp;L</th></tr></thead>
+              <tbody class="divide-y divide-[#1B2436]">${scRows.map(r => `<tr><td class="py-2 font-bold text-white">${r.label}</td><td class="py-2 text-center mono text-[#00D4FF]">${r.open_count}</td><td class="py-2 text-center mono">${r.wins}W/${r.losses}L</td><td class="py-2 text-right mono font-bold ${r.win_rate_pct>=55?'text-[#00E676]':'text-slate-300'}">${r.win_rate_pct}%</td><td class="py-2 text-right mono">${r.profit_factor}</td><td class="py-2 text-right mono font-bold ${Number(r.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(r.net_pnl_usdt, true)}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+          <div class="space-y-2">${list.map(p=>`<div class="card p-3.5 flex justify-between items-center"><div><div class="text-sm font-bold text-white">${p.symbol} <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#141B2D] text-[#F5B700]">${p.tier}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#A855F7]/15 text-[#D8B4FE]">${p.bias_tag||'TREND'}</span></div><div class="text-[11px] text-slate-400">${p.engine_code} • Score ${p.score} • Risk ₹${Math.round(Number(p.planned_risk_inr||500))}</div></div><div class="text-right mono text-sm font-bold ${Number(p.unrealised_net_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(p.unrealised_net_usdt, true)}</div></div>`).join('')}</div>`;
       } else if (section === 'portfolio') {
         const cfg = overview?.config || {};
         const startDisp = currMode === 'INR' ? Math.round(Number(cfg.starting_usdt || 1000) * inrRate()) : Number(cfg.starting_usdt || 1000);
@@ -929,6 +955,16 @@
             <div><label class="text-slate-400">TG Elite Cap/24h</label><input id="c-tg" type="number" value="${cfg.telegram_daily_cap||6}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
           </div>
           <button onclick="saveCfg()" class="mt-3 px-4 py-2 rounded-xl bg-[#00E676] text-[#04120B] font-bold text-xs">Save Settings</button></div>
+          <div class="card p-4 border-[#A855F7]/40"><h3 class="text-sm font-extrabold text-white">🧠 v2.0 6-Layer Strategy &amp; Unlimited Paper Mode</h3><p class="text-[11px] text-slate-400 mt-0.5">Unlimited mode lets all 6-layer verified trades execute so you can test accuracy fast. Switch to 2/3/4/5 max anytime.</p>
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3 text-xs">
+              <div><label class="text-slate-400">Unlimited Paper Mode</label><select id="s-unlim" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white"><option value="true" ${overview?.strategy_config?.unlimited_paper_mode!==false?'selected':''}>ON (Unlimited)</option><option value="false" ${overview?.strategy_config?.unlimited_paper_mode===false?'selected':''}>OFF (Use Custom Cap)</option></select></div>
+              <div><label class="text-slate-400">Custom Max Open (if OFF)</label><input id="s-maxpos" type="number" min="0" max="50" value="${overview?.strategy_config?.max_open_positions||5}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+              <div><label class="text-slate-400">Equal-Risk / Trade (₹)</label><input id="s-risk" type="number" min="100" max="5000" step="50" value="${Math.round(Number(overview?.strategy_config?.risk_per_trade_inr||500))}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+              <div><label class="text-slate-400">Soft Bias (0.5x Counter)</label><select id="s-softbias" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white"><option value="true" ${overview?.strategy_config?.soft_bias_enabled!==false?'selected':''}>ON (A+ 90+ Allowed)</option><option value="false" ${overview?.strategy_config?.soft_bias_enabled===false?'selected':''}>OFF (Hard Lock)</option></select></div>
+              <div><label class="text-slate-400">Free SMC (FVG/OB/Zone)</label><select id="s-smc" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white"><option value="true" ${overview?.strategy_config?.smc_filter_enabled!==false?'selected':''}>ON</option><option value="false" ${overview?.strategy_config?.smc_filter_enabled===false?'selected':''}>OFF</option></select></div>
+              <div><label class="text-slate-400">SL Cooldown (Hours)</label><input id="s-cool" type="number" min="0" max="48" value="${overview?.strategy_config?.sl_cooldown_hours ?? 6}" class="mt-1 w-full px-2.5 py-2 rounded-xl bg-[#090D16] border border-[#24324A] text-white mono"/></div>
+            </div>
+            <button onclick="saveStrategyCfg()" class="mt-3 px-4 py-2 rounded-xl bg-[#A855F7] text-white font-bold text-xs">Save v2.0 Strategy</button></div>
           <div class="card p-4"><h3 class="text-sm font-extrabold text-white mb-2">Closed Ledger (${closed.length})</h3><div class="space-y-2">${closed.map(c=>`<div class="p-3 rounded-xl bg-[#090D16] border border-[#1B2436] flex justify-between items-center"><div><span class="text-sm font-bold text-white">${c.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800">${c.outcome}</span><div class="text-[11px] text-slate-500">${c.engine_code} • ${c.exit_reason}</div></div><div class="flex items-center gap-3"><span class="mono text-sm font-bold whitespace-nowrap ${Number(c.net_pnl_usdt)>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(c.net_pnl_usdt, true)}</span><button onclick="delPos('${c.position_id}')" class="text-[10px] text-slate-400 hover:text-[#FF3B5C]">Delete</button></div></div>`).join('')}</div></div>`;
       } else if (section === 'system') {
         el.innerHTML = `<div class="card p-4"><div class="flex justify-between items-center"><h2 class="text-base font-extrabold text-white">System &amp; 3-Tier Exchange Feeds</h2><button onclick="apiFetch('/api/v1/telegram/test',{method:'POST',body:'{}'}).then(()=>showToast('Telegram test sent'))" class="px-3 py-1.5 rounded-xl bg-[#00D4FF]/15 text-[#00D4FF] text-xs font-bold">Test Telegram</button></div>
@@ -952,6 +988,8 @@
           if (m.type === 'LIVE_TICK' && overview) {
             overview.majors = m.majors; overview.ledger = m.ledger; overview.usdt_inr = m.usdt_inr;
             if (m.brain) overview.brain = m.brain;
+            if (m.spot_summary) overview.spot_summary = m.spot_summary;
+            if (m.strategy_config) overview.strategy_config = m.strategy_config;
             renderMajors();
             renderBrainSticky();
             if (section === 'desk') render();
