@@ -35,7 +35,14 @@ from .domain.crypto_engines import (
     evaluate_engine_5_crash_short,
 )
 from .domain.crypto_simulator import CryptoPaperEngine, IST
+from .core.strategy_config import StrategyConfig
 from .domain.market_brain import MarketBrainEngine
+from .domain.portfolio_manager import (
+    build_engine_scorecard,
+    check_risk_firewall,
+    evaluate_soft_bias,
+)
+from .domain.smc_filter import evaluate_smc_context
 from .domain.spot_vault import (
     BLUECHIP_SPOT_UNIVERSE,
     SpotVaultEngine,
@@ -86,6 +93,32 @@ class SpotBuyRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     execute_entries: bool = True
+
+
+class StrategyConfigUpdateRequest(BaseModel):
+    unlimited_paper_mode: Optional[bool] = None
+    max_open_positions: Optional[int] = None
+    max_per_direction: Optional[int] = None
+    max_boom_open: Optional[int] = None
+    max_daily_trades: Optional[int] = None
+    smc_filter_enabled: Optional[bool] = None
+    soft_bias_enabled: Optional[bool] = None
+    counter_trend_min_score: Optional[int] = None
+    counter_trend_risk_multiplier: Optional[float] = None
+    equal_risk_enabled: Optional[bool] = None
+    risk_per_trade_inr: Optional[float] = None
+    sl_cooldown_hours: Optional[int] = None
+    disable_kill_switch_in_unlimited: Optional[bool] = None
+
+
+class ExternalWebhookSignalRequest(BaseModel):
+    symbol: str
+    direction: str = "LONG"
+    score: int = 88
+    stop_loss_pct: float = 2.2
+    target_pct: float = 5.5
+    source: str = "TRADINGVIEW_WEBHOOK"
+    secret: Optional[str] = None
 
 
 
@@ -139,6 +172,10 @@ def _run_spot_vault_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[st
         footprints[sym] = prov.get_footprint_cvd(sym)
     monitor_actions = vault.monitor_open_positions(ltp_map, footprints, now_ist, store, tg, usdt_inr)
 
+    brain_dir = app.state.brain.current_directive
+    spot_dir = brain_dir.spot_directive if brain_dir else "QUICK_BOUNCE"
+    strat_cfg: StrategyConfig = app.state.strategy_cfg
+
     radar_rows: List[Dict[str, Any]] = []
     for sym in BLUECHIP_SPOT_UNIVERSE:
         c15 = prov.get_candles(sym, "15m", 35)
@@ -146,20 +183,39 @@ def _run_spot_vault_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[st
         depth = prov.get_orderbook_depth(sym)
         fp = footprints.get(sym) or prov.get_footprint_cvd(sym)
         row = evaluate_spot_bounce(sym, c15, c1h, tickers.get(sym), depth, fp, risk_blocked)
+        if strat_cfg.smc_filter_enabled and c1h:
+            smc = evaluate_smc_context(c1h, direction="LONG")
+            row["smc_zone"] = smc.zone
+            row["smc_tags"] = smc.tags
+            if smc.zone == "DISCOUNT":
+                row["score"] = min(100, int(row["score"]) + 5)
+                row["passed_rules"] = list(row["passed_rules"]) + [f"SMC Discount Zone ({smc.range_pos_pct:.0f}%)"]
+        row["brain_spot_directive"] = spot_dir
         radar_rows.append(row)
 
     radar_rows.sort(key=lambda x: (1 if x["stage"] == "BUY_READY" else 0, x["score"]), reverse=True)
     vault.last_radar = radar_rows
 
     opened: List[Dict[str, Any]] = []
-    if execute_entries and vault.config.enabled:
+    # Bug #3 fix: Spot Vault obeys Market Brain spot_directive (WAIT_TOP pauses chasing green tops)
+    allow_auto_spot = (spot_dir != "WAIT_TOP")
+    if execute_entries and vault.config.enabled and allow_auto_spot:
         active_syms = {p.symbol for p in vault.positions.values() if p.status == "OPEN"}
+        max_spot_coins = 10 if strat_cfg.unlimited_paper_mode else vault.config.max_active_coins
         for item in radar_rows:
-            if len(active_syms) >= vault.config.max_active_coins:
+            if len(active_syms) >= max_spot_coins:
                 break
             sym = item["symbol"]
             if item["stage"] != "BUY_READY" or sym in active_syms:
                 continue
+            # In SEVERE_CRASH (DEEP_DCA_ONLY), require deeper dip >= -4.0% or SMC Discount Zone
+            if spot_dir == "DEEP_DCA_ONLY":
+                try:
+                    dip_val = Decimal(str(item.get("dip_from_high_pct", "0")))
+                except Exception:
+                    dip_val = Decimal("0")
+                if dip_val > Decimal("-4.0") and item.get("smc_zone") != "DISCOUNT":
+                    continue
             ltp = ltp_map.get(sym) or Decimal(item["ltp"])
             if ltp <= 0:
                 continue
@@ -199,14 +255,16 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     usdt_inr = prov.get_usdt_inr()
     news_items = news_svc.refresh_news()
 
+    strat_cfg: StrategyConfig = app.state.strategy_cfg
     ltp_map = {s: t.ltp for s, t in tickers.items()}
-    monitor_actions = eng.monitor_open_positions(ltp_map, now_ist, store, tg)
+    disable_ks = strat_cfg.unlimited_paper_mode and strat_cfg.disable_kill_switch_in_unlimited
+    monitor_actions = eng.monitor_open_positions(
+        ltp_map, now_ist, store, tg, usdt_inr=usdt_inr, disable_kill_switch=disable_ks
+    )
 
+    # Bug #1 fix: MarketBrainEngine is the SINGLE regime source of truth (no dual Engine 0 conflict)
     _run_brain_deep(app)
     brain_dir = app.state.brain.current_directive
-    btc_4h = prov.get_candles("BTCUSDT", "4h", 120)
-    regime = evaluate_btc_regime(btc_4h, tickers.get("BTCUSDT"))
-    eng.last_regime = regime
 
     risk_blocked: set = set()
     bull_catalysts: Dict[str, str] = {}
@@ -309,6 +367,29 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     boom_rows.sort(key=lambda x: x["score"], reverse=True)
     eng.last_boom_items = boom_rows
 
+    # Layer 3: Apply Free LuxAlgo-inspired SMC Filter (FVG / Order Block / Premium-Discount Zone)
+    if strat_cfg.smc_filter_enabled:
+        enriched_signals: List[CryptoSignal] = []
+        smc_cache: Dict[str, Any] = {}
+        for s in signals:
+            ckey = f"{s.symbol}:{s.direction}"
+            if ckey not in smc_cache:
+                c_ref = prov.get_candles(s.symbol, "15m", 35)
+                smc_cache[ckey] = evaluate_smc_context(c_ref, direction=s.direction)
+            smc = smc_cache[ckey]
+            adj_score = max(1, min(99, s.score + smc.score_delta))
+            new_rules = list(s.passed_rules) + smc.tags
+            enriched_signals.append(CryptoSignal(
+                symbol=s.symbol, engine_code=s.engine_code, horizon_bucket=s.horizon_bucket,
+                hold_horizon=s.hold_horizon, direction=s.direction, status=s.status,
+                score=adj_score, entry_price=s.entry_price, stop_loss=s.stop_loss,
+                target_price=s.target_price, expected_net_rr=s.expected_net_rr,
+                recommended_leverage=s.recommended_leverage, passed_rules=new_rules,
+                failed_rules=s.failed_rules,
+                rationale=(f"[SMC {smc.zone}] " if smc.tags else "") + s.rationale,
+            ))
+        signals = enriched_signals
+
     signals.sort(key=lambda s: (1 if s.status == "CONFIRMED" else 0, s.score), reverse=True)
     eng.last_signals = [
         {
@@ -322,40 +403,45 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     ]
 
     opened: List[Dict[str, Any]] = []
-    if execute_entries and eng.config.enabled and not eng.kill_switch_active:
-        open_pos_list = [p for p in eng.positions.values() if p.status == "OPEN"]
-        open_syms = {p.symbol for p in open_pos_list}
-        # 6-Hour Per-Coin SL Cooldown (prevents double-SL on the same coin like HMSTRUSDT!)
-        sl_cooldown_syms: set = set()
-        for cp in eng.positions.values():
-            if cp.status == "CLOSED" and cp.outcome == "LOSS" and cp.closed_at_ist:
-                try:
-                    c_dt = datetime.datetime.fromisoformat(cp.closed_at_ist)
-                    if (now_ist - c_dt).total_seconds() < 6 * 3600:
-                        sl_cooldown_syms.add(cp.symbol)
-                except Exception:
-                    pass
-        dir_counts = {
-            "LONG": sum(1 for p in open_pos_list if p.direction == "LONG"),
-            "SHORT": sum(1 for p in open_pos_list if p.direction == "SHORT"),
-        }
-        boom_open_cnt = sum(1 for p in open_pos_list if p.horizon_bucket == "boom")
+    can_trade = execute_entries and eng.config.enabled and (disable_ks or not eng.kill_switch_active)
+    if can_trade:
         for sig in signals:
+            if sig.status != "CONFIRMED":
+                continue
             is_boom = sig.engine_code == "BOOM_RADAR"
-            if is_boom:
-                if boom_open_cnt >= 2:
-                    continue
-            elif len(open_syms) >= eng.config.max_open_positions:
+            open_pos_list = [p for p in eng.positions.values() if p.status == "OPEN"]
+            all_pos_list = list(eng.positions.values())
+
+            # Layer 5: Risk Firewall (Duplicate Lock, 6h SL Cooldown, News Shield, Unlimited/Custom Caps)
+            fw_ok, _fw_reason = check_risk_firewall(
+                symbol=sig.symbol,
+                direction=sig.direction,
+                engine_code=sig.engine_code,
+                is_boom=is_boom,
+                open_positions=open_pos_list,
+                all_positions=all_pos_list,
+                risk_blocked_syms=risk_blocked,
+                now_ist=now_ist,
+                cfg=strat_cfg,
+                fallback_max_open=eng.config.max_open_positions,
+            )
+            if not fw_ok:
                 continue
-            if sig.status != "CONFIRMED" or sig.symbol in open_syms or sig.symbol in sl_cooldown_syms or (sig.symbol in risk_blocked and sig.engine_code != "ENGINE_5_CRASH_SHORT"):
-                continue
-            if dir_counts.get(sig.direction, 0) >= 2 and not is_boom:
-                continue
-            if sig.direction == "LONG" and ((brain_dir and not brain_dir.allow_longs) or not regime.allow_longs) and sig.engine_code not in ("ENGINE_4_SHADOW_SWEEP", "BOOM_RADAR"):
-                continue
-            if sig.direction == "SHORT" and ((brain_dir and not brain_dir.allow_shorts) or not regime.allow_shorts) and sig.engine_code not in ("ENGINE_4_SHADOW_SWEEP", "ENGINE_5_CRASH_SHORT"):
-                continue
+
+            # Layer 4: Soft Bias Blending (No Hard Lock on A+ Counter-Trend Setups)
             fp_now = prov.get_footprint_cvd(sig.symbol)
+            bias_dec = evaluate_soft_bias(
+                direction=sig.direction,
+                engine_code=sig.engine_code,
+                score=sig.score,
+                brain_dir=brain_dir,
+                footprint=fp_now,
+                cfg=strat_cfg,
+            )
+            if not bias_dec.allowed:
+                continue
+
+            # Layer 3B: Gemini Trap Judge Veto
             sym_chg_now = float(tickers[sig.symbol].change_24h_pct) if sig.symbol in tickers else 0.0
             verdict = trap_judge.evaluate_trade({
                 "symbol": sig.symbol, "direction": sig.direction, "engine_code": sig.engine_code,
@@ -364,16 +450,30 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             })
             if verdict.get("verdict") == "VETO_TRAP":
                 continue
-            pos = eng.open_position(sig, now_ist, paper_store=store, telegram_notifier=tg, usdt_inr=usdt_inr)
-            open_syms.add(pos.symbol)
-            dir_counts[pos.direction] = dir_counts.get(pos.direction, 0) + 1
-            if is_boom:
-                boom_open_cnt += 1
-            opened.append({"position_id": pos.position_id, "symbol": pos.symbol, "tier": pos.tier, "engine": pos.engine_code})
+
+            # Layer 6: Execution with Equal-Risk Volatility Sizing (₹500 / 0.5x Counter-Trend)
+            pos = eng.open_position(
+                sig,
+                now_ist,
+                paper_store=store,
+                telegram_notifier=tg,
+                usdt_inr=usdt_inr,
+                strategy_cfg=strat_cfg,
+                risk_multiplier=bias_dec.risk_multiplier,
+                bias_tag=bias_dec.bias_tag,
+            )
+            opened.append({
+                "position_id": pos.position_id,
+                "symbol": pos.symbol,
+                "tier": pos.tier,
+                "engine": pos.engine_code,
+                "bias_tag": pos.bias_tag,
+                "planned_risk_inr": str(pos.planned_risk_inr),
+            })
 
     return {
         "scan_ist": eng.last_scan_ist,
-        "regime": regime.regime,
+        "regime": brain_dir.mode if brain_dir else "SIDEWAYS_RANGE",
         "market_universe_screened": len(tickers),
         "dynamic_coins_deep_scanned": len(set(scan_syms) | {t.symbol for t in boom_candidates}),
         "signals_evaluated": len(signals),
@@ -409,8 +509,10 @@ async def _crypto_24_7_scheduler(app: FastAPI) -> None:
                     ltps = {s: t.ltp for s, t in tickers.items()}
                     usdt_inr = app.state.provider.get_usdt_inr()
                     if open_pos:
+                        dis_ks = app.state.strategy_cfg.unlimited_paper_mode and app.state.strategy_cfg.disable_kill_switch_in_unlimited
                         await asyncio.to_thread(
-                            app.state.engine.monitor_open_positions, ltps, now_ist, app.state.store, app.state.tg
+                            app.state.engine.monitor_open_positions,
+                            ltps, now_ist, app.state.store, app.state.tg, usdt_inr, dis_ks,
                         )
                     if open_spot:
                         fps = {
@@ -467,9 +569,10 @@ async def _crypto_24_7_scheduler(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     cfg = get_settings()
-    app = FastAPI(title="TRADEIQ Crypto Pro v1.0", version="1.1.0")
+    app = FastAPI(title="TRADEIQ Crypto Pro v2.0", version="2.0.0")
     app.state.cfg = cfg
     app.state.provider = MultiExchangeCryptoProvider(demo_mode=cfg.demo_mode)
+    app.state.strategy_cfg = StrategyConfig()
     app.state.engine = CryptoPaperEngine()
     app.state.spot_vault = SpotVaultEngine()
     app.state.brain = MarketBrainEngine(demo_mode=cfg.demo_mode)
@@ -508,7 +611,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/health")
     async def health():
-        return {"status": "ok", "service": "tradeiq-crypto-v1", "paper_only": True, "active_exchange": app.state.provider.active_exchange}
+        return {"status": "ok", "service": "tradeiq-crypto-v2", "paper_only": True, "active_exchange": app.state.provider.active_exchange}
 
     @app.post("/api/v1/auth/login")
     async def login(payload: LoginRequest):
@@ -540,11 +643,13 @@ def create_app() -> FastAPI:
             "usdt_inr": str(usdt_inr),
             "majors": majors,
             "regime": {
-                "regime": eng.last_regime.regime if eng.last_regime else "RANGE_BOUND",
-                "summary": eng.last_regime.summary if eng.last_regime else "BTC Regime Gate active.",
-                "btc_funding_pct": str(eng.last_regime.btc_funding_pct) if eng.last_regime else "0.010",
+                "regime": app.state.brain.current_directive.mode if app.state.brain.current_directive else "SIDEWAYS_RANGE",
+                "summary": app.state.brain.current_directive.primary_cause if app.state.brain.current_directive else "Master Market Brain active.",
+                "btc_funding_pct": majors[0]["funding_pct"] if majors else "0.010",
             },
             "config": eng.config.to_dict(),
+            "strategy_config": app.state.strategy_cfg.to_dict(),
+            "scorecard": build_engine_scorecard(list(eng.positions.values()), list(vault.positions.values()), usdt_inr),
             "tg_sent_today": eng.tg_sent_today,
             "tg_daily_cap": eng.config.telegram_daily_cap,
             "kill_switch_active": eng.kill_switch_active,
@@ -611,6 +716,9 @@ def create_app() -> FastAPI:
         sym = payload.symbol.strip().upper()
         if not sym.endswith("USDT"):
             sym += "USDT"
+        existing_open = [p for p in app.state.spot_vault.positions.values() if p.status == "OPEN" and p.symbol == sym]
+        if existing_open:
+            raise HTTPException(status_code=409, detail=f"Spot Vault already holds an open position for {sym}. Use DCA or Sell instead.")
         tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
         t_obj = tickers.get(sym)
         if not t_obj or t_obj.ltp <= 0:
@@ -745,7 +853,98 @@ def create_app() -> FastAPI:
     @app.put("/api/v1/crypto/config")
     async def crypto_update_config(payload: ConfigUpdateRequest, _owner: str = Depends(require_owner)):
         data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
-        return {"config": app.state.engine.update_config(data)}
+        if "max_open_positions" in data:
+            app.state.strategy_cfg.update({"max_open_positions": data["max_open_positions"]})
+        return {"config": app.state.engine.update_config(data), "strategy_config": app.state.strategy_cfg.to_dict()}
+
+    @app.get("/api/v1/crypto/strategy-config")
+    async def get_strategy_config(_owner: str = Depends(require_owner)):
+        return {"strategy_config": app.state.strategy_cfg.to_dict()}
+
+    @app.put("/api/v1/crypto/strategy-config")
+    async def update_strategy_config(payload: StrategyConfigUpdateRequest, _owner: str = Depends(require_owner)):
+        data = payload.model_dump(exclude_none=True) if hasattr(payload, "model_dump") else payload.dict(exclude_none=True)
+        updated = app.state.strategy_cfg.update(data)
+        if "max_open_positions" in data:
+            app.state.engine.config.max_open_positions = app.state.strategy_cfg.max_open_positions
+        if app.state.strategy_cfg.unlimited_paper_mode and app.state.strategy_cfg.disable_kill_switch_in_unlimited:
+            app.state.engine.kill_switch_active = False
+            app.state.engine.kill_switch_reason = None
+        return {"strategy_config": updated}
+
+    @app.get("/api/v1/crypto/scorecard")
+    async def crypto_scorecard(_owner: str = Depends(require_owner)):
+        usdt_inr = app.state.provider.get_usdt_inr()
+        return build_engine_scorecard(
+            list(app.state.engine.positions.values()),
+            list(app.state.spot_vault.positions.values()),
+            usdt_inr,
+        )
+
+    @app.post("/api/v1/webhooks/signal")
+    async def external_webhook_signal(payload: ExternalWebhookSignalRequest):
+        strat_cfg: StrategyConfig = app.state.strategy_cfg
+        if strat_cfg.webhook_secret and (payload.secret or "").strip() != strat_cfg.webhook_secret:
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
+        sym = payload.symbol.strip().upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        direction = payload.direction.strip().upper()
+        if direction not in ("LONG", "SHORT"):
+            raise HTTPException(status_code=400, detail="direction must be LONG or SHORT")
+
+        tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
+        t_obj = tickers.get(sym)
+        if not t_obj or t_obj.ltp <= 0:
+            raise HTTPException(status_code=404, detail=f"Live price unavailable for {sym}")
+
+        ltp = t_obj.ltp
+        sl_pct = Decimal(str(max(0.5, min(12.0, payload.stop_loss_pct)))) / Decimal("100")
+        tp_pct = Decimal(str(max(1.0, min(30.0, payload.target_pct)))) / Decimal("100")
+        sl = (ltp * (Decimal("1") - sl_pct) if direction == "LONG" else ltp * (Decimal("1") + sl_pct)).quantize(Decimal("0.0001"))
+        tp = (ltp * (Decimal("1") + tp_pct) if direction == "LONG" else ltp * (Decimal("1") - tp_pct)).quantize(Decimal("0.0001"))
+        now_ist = datetime.datetime.now(IST)
+        eng = app.state.engine
+
+        fw_ok, fw_reason = check_risk_firewall(
+            symbol=sym, direction=direction, engine_code="WEBHOOK_EXTERNAL", is_boom=False,
+            open_positions=[p for p in eng.positions.values() if p.status == "OPEN"],
+            all_positions=list(eng.positions.values()), risk_blocked_syms=set(),
+            now_ist=now_ist, cfg=strat_cfg, fallback_max_open=eng.config.max_open_positions,
+        )
+        if not fw_ok:
+            return {"accepted": False, "reason": fw_reason}
+
+        fp_now = await asyncio.to_thread(app.state.provider.get_footprint_cvd, sym)
+        bias_dec = evaluate_soft_bias(
+            direction=direction, engine_code="WEBHOOK_EXTERNAL", score=payload.score,
+            brain_dir=app.state.brain.current_directive, footprint=fp_now, cfg=strat_cfg,
+        )
+        if not bias_dec.allowed:
+            return {"accepted": False, "reason": bias_dec.reason}
+
+        sig = CryptoSignal(
+            symbol=sym, engine_code="WEBHOOK_EXTERNAL", horizon_bucket="intraday",
+            hold_horizon="External Webhook • Paper Exec", direction=direction, status="CONFIRMED",
+            score=max(1, min(99, payload.score)), entry_price=ltp, stop_loss=sl, target_price=tp,
+            expected_net_rr=(tp_pct / sl_pct).quantize(Decimal("0.01")),
+            recommended_leverage=Decimal("2.0"), passed_rules=[f"Source: {payload.source}", bias_dec.bias_tag],
+            failed_rules=[], rationale=f"Webhook ({payload.source}) • {bias_dec.reason}",
+        )
+        pos = eng.open_position(
+            sig, now_ist, paper_store=app.state.store, telegram_notifier=app.state.tg,
+            usdt_inr=app.state.provider.get_usdt_inr(), strategy_cfg=strat_cfg,
+            risk_multiplier=bias_dec.risk_multiplier, bias_tag=bias_dec.bias_tag,
+        )
+        return {
+            "accepted": True,
+            "position_id": pos.position_id,
+            "symbol": pos.symbol,
+            "direction": pos.direction,
+            "bias_tag": pos.bias_tag,
+            "planned_risk_inr": str(pos.planned_risk_inr),
+            "margin_usdt": str(pos.margin_usdt),
+        }
 
     @app.post("/api/v1/paper/positions/{position_id}/close")
     async def close_paper(position_id: str, _owner: str = Depends(require_owner)):
@@ -754,7 +953,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Open position not found")
         tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
         ltp = tickers[pos.symbol].ltp if pos.symbol in tickers else pos.entry_fill_price
-        closed = app.state.engine.close_position(position_id, ltp, "MANUAL_CLOSE", datetime.datetime.now(IST), app.state.store, app.state.tg)
+        closed = app.state.engine.close_position(position_id, ltp, "MANUAL_CLOSE", datetime.datetime.now(IST), app.state.store, app.state.tg, usdt_inr=app.state.provider.get_usdt_inr())
         return {"closed": True, "net_pnl_usdt": str(closed.net_pnl_usdt) if closed else "0.00"}
 
     @app.delete("/api/v1/paper/positions/{position_id}")
@@ -786,7 +985,7 @@ def create_app() -> FastAPI:
         return await asyncio.to_thread(
             app.state.tg.send_alert,
             "TEST CONNECTION",
-            "TRADEIQ Crypto Pro v1.0 + Spot Vault is live and connected! (Paper Mode Only)",
+            "TRADEIQ Crypto Pro v2.0 (6-Layer + Unlimited Paper Lab) is live and connected! (Paper Mode Only)",
             datetime.datetime.now(IST).strftime("%d %b %Y, %I:%M %p IST"),
         )
 
@@ -808,6 +1007,8 @@ def create_app() -> FastAPI:
                     {"symbol": s, "ltp": str(tickers[s].ltp), "change_24h_pct": str(tickers[s].change_24h_pct)}
                     for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT") if s in tickers
                 ]
+                vault = app.state.spot_vault
+                sled = vault.vault_ledger(ltps, usdt_inr)
                 await websocket.send_json({
                     "type": "LIVE_TICK",
                     "ts_ist": datetime.datetime.now(IST).strftime("%H:%M:%S IST"),
@@ -816,6 +1017,13 @@ def create_app() -> FastAPI:
                     "majors": majors,
                     "ledger": eng.account_ledger(ltps, usdt_inr),
                     "brain": app.state.brain.current_directive.to_dict() if app.state.brain.current_directive else None,
+                    "spot_summary": {
+                        "open_count": sled["open_count"],
+                        "realised_net_usdt": sled["realised_net_usdt"],
+                        "target_net_pct": str(vault.config.target_net_pct),
+                        "enabled": vault.config.enabled,
+                    },
+                    "strategy_config": app.state.strategy_cfg.to_dict(),
                 })
                 sent += 1
                 if max_frames > 0 and sent >= max_frames:
