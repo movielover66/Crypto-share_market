@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TRADEIQ Crypto Pro v2.0 — 6-Layer INR Desk &amp; Spot Vault</title>
+  <title>TRADEIQ Crypto Pro v2.1 — 12-Pt Chart Reader &amp; 6-Guard INR Desk</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -275,7 +275,21 @@
               if (tot > 0) {
                 const dp = (((liveFpBuy - liveFpSell) / tot) * 100).toFixed(1);
                 const bias = Number(dp) >= 10 ? 'BUY_ABSORPTION' : (Number(dp) <= -10 ? 'SELL_ABSORPTION' : 'NEUTRAL');
-                const fpBox = document.getElementById('fp-box');
+                const crBox = document.getElementById('cr12-box');
+      if (crBox && r.chart_read) {
+        const cr = r.chart_read, pm = cr.price_map || {}, cv = r.coin_verification || {};
+        crBox.innerHTML = `<div class="flex flex-wrap justify-between items-center gap-2 mb-2.5">
+          <div><span class="text-sm font-extrabold text-white">🧭 12-Point Pro Chart Reader Map</span> <span class="text-[10px] mono px-2 py-0.5 rounded ${cv.verified?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${cv.verified?'✓ '+cv.category:'🚫 BLOCKED'}</span></div>
+          <span class="text-xs mono font-extrabold px-2.5 py-0.5 rounded ${cr.passed?'bg-[#00E676]/20 text-[#00E676]':'bg-[#F5B700]/20 text-[#F5B700]'}">${cr.points_passed}/12 Points (${cr.score_12pt}%)</span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mono">
+          <div class="p-2 rounded-xl bg-[#090D16] border border-[#1B2436]"><div class="text-[10px] text-slate-400">Buyer Wall (50L Bid)</div><div class="font-bold text-[#00E676]">${fmtPx(pm.big_bid_wall_px||0)}</div></div>
+          <div class="p-2 rounded-xl bg-[#090D16] border border-[#1B2436]"><div class="text-[10px] text-slate-400">Seller Wall (50L Ask)</div><div class="font-bold text-[#FF3B5C]">${fmtPx(pm.big_ask_wall_px||0)}</div></div>
+          <div class="p-2 rounded-xl bg-[#090D16] border border-[#1B2436]"><div class="text-[10px] text-slate-400">Volume POC Magnet</div><div class="font-bold text-[#F5B700]">${fmtPx(pm.poc||0)}</div></div>
+          <div class="p-2 rounded-xl bg-[#090D16] border border-[#1B2436]"><div class="text-[10px] text-slate-400">Structure / Room</div><div class="font-bold text-[#00D4FF]">${pm.bos_choch||'N/A'} (${pm.room_to_obstacle_rr||0}R)</div></div>
+        </div>`;
+      }
+      const fpBox = document.getElementById('fp-box');
                 if (fpBox) {
                   fpBox.innerHTML = `<div class="flex items-center justify-between flex-wrap gap-2">
                     <div><div class="text-sm font-extrabold text-white">Live Millisecond Tick Footprint &amp; CVD (${sym})</div>
@@ -595,6 +609,7 @@
             </div>
             <div id="tv-candle-box" class="w-full h-80 rounded-xl overflow-hidden border border-[#1B2436] bg-[#070B12]"></div>
           </div>
+          <div id="cr12-box" class="card p-4"></div>
           <div id="fp-box" class="card p-4"></div>
           <div id="ob-box" class="card p-4"></div>
         `;
