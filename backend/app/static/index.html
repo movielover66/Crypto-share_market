@@ -575,6 +575,11 @@
       showToast('Deleted manually from Supabase');
       await refreshCore();
     };
+    window.resetTgCounter = async () => {
+      await apiFetch('/api/v1/telegram/reset-counter', { method: 'POST', body: '{}' });
+      showToast('Telegram Elite counter reset to 0!');
+      await refreshCore();
+    };
     window.saveCfg = async () => {
       const rawStart = Number(document.getElementById('c-start').value);
       const rawPer = Number(document.getElementById('c-per').value);
@@ -813,7 +818,7 @@
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Equity (${currMode})</div><div class="text-lg font-extrabold text-white mono mt-1">${fmtAmt(led.total_equity_usdt || 1000)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtAlt(led.total_equity_usdt || 1000)}</div></div>
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Live Net P&L (${currMode})</div><div class="text-lg font-extrabold mono mt-1 ${netU>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(netU, true)}</div><div class="text-[10px] text-slate-400 mono">≈ ${fmtAlt(netU, true)}</div></div>
-            <div class="card p-3.5"><div class="text-[11px] text-slate-400">Telegram Elite Today</div><div class="text-lg font-extrabold text-[#F5B700] mono mt-1">${overview?.tg_sent_today || 0} / ${overview?.tg_daily_cap || 6}</div><div class="text-[10px] text-slate-400">A+ Trades Sent</div></div>
+            <div class="card p-3.5"><div class="flex items-center justify-between gap-1"><span class="text-[11px] text-slate-400">Telegram Elite Today</span><button onclick="resetTgCounter()" class="px-2 py-0.5 rounded-lg bg-[#F5B700]/15 hover:bg-[#F5B700]/30 border border-[#F5B700]/40 text-[10px] font-bold text-[#F5B700]">↺ Reset</button></div><div class="text-lg font-extrabold text-[#F5B700] mono mt-1">${overview?.tg_sent_today || 0} / ${overview?.tg_daily_cap || 6}</div><div class="text-[10px] text-slate-400">A+ Trades Sent</div></div>
             <div class="card p-3.5"><div class="text-[11px] text-slate-400">Backend Lab Accuracy</div><div class="text-lg font-extrabold text-[#00E676] mono mt-1">${led.accuracy_pct || '0.0'}%</div><div class="text-[10px] text-slate-400">${led.wins||0}W/${led.losses||0}L • ${openPos.length} Open</div></div>
           </div>
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
