@@ -71,8 +71,9 @@ class MultiExchangeCryptoProvider:
     def __init__(self, demo_mode: bool = False) -> None:
         self.demo_mode = demo_mode
         self.active_exchange: str = "DEMO" if demo_mode else "OKX_V5"
-        self.usdt_inr_rate: Decimal = Decimal("85.20")
+        self.usdt_inr_rate: Decimal = Decimal("93.37")
         self.last_rate_sync: float = 0.0
+        self.last_ticker_sync: float = 0.0
         self.ticker_cache: Dict[str, CryptoTicker] = {}
         self.candle_cache: Dict[Tuple[str, str], Tuple[float, List[CryptoCandle]]] = {}
         self.depth_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -97,9 +98,13 @@ class MultiExchangeCryptoProvider:
             pass
         return self.usdt_inr_rate
 
-    def refresh_all_tickers(self) -> Dict[str, CryptoTicker]:
+    def refresh_all_tickers(self, force: bool = False) -> Dict[str, CryptoTicker]:
         if self.demo_mode:
             return self._demo_tickers()
+
+        # Bug #7 fix: 5-second short cache TTL prevents redundant OKX REST bursts
+        if not force and self.ticker_cache and (time.time() - self.last_ticker_sync) < 5.0:
+            return self.ticker_cache
 
         # 1. Primary: OKX v5 USDT-SWAP Tickers (works cleanly from Render US/EU/SG IPs!)
         okx = _http_get_json("https://www.okx.com/api/v5/market/tickers?instType=SWAP", timeout=6.0)
@@ -127,6 +132,7 @@ class MultiExchangeCryptoProvider:
                     continue
             if self.ticker_cache:
                 self.active_exchange = "OKX_V5"
+                self.last_ticker_sync = time.time()
                 self.exchange_health["okx"] = {"ok": True, "detail": f"Connected • {len(self.ticker_cache)} USDT Swaps"}
                 return self.ticker_cache
 
@@ -159,6 +165,7 @@ class MultiExchangeCryptoProvider:
                     continue
             if self.ticker_cache:
                 self.active_exchange = "BYBIT_V5"
+                self.last_ticker_sync = time.time()
                 self.exchange_health["bybit"] = {"ok": True, "detail": f"Connected • {len(self.ticker_cache)} USDT Perps"}
                 return self.ticker_cache
 
@@ -190,6 +197,7 @@ class MultiExchangeCryptoProvider:
                     continue
             if self.ticker_cache:
                 self.active_exchange = "OKX_V5"
+                self.last_ticker_sync = time.time()
                 self.exchange_health["okx"] = {"ok": True, "detail": f"Active Failover • {len(self.ticker_cache)} Swaps"}
                 return self.ticker_cache
 
@@ -219,6 +227,7 @@ class MultiExchangeCryptoProvider:
                     continue
             if self.ticker_cache:
                 self.active_exchange = "KRAKEN_V2"
+                self.last_ticker_sync = time.time()
                 self.exchange_health["kraken"] = {"ok": True, "detail": "US-Safe Failover Active"}
                 return self.ticker_cache
 
