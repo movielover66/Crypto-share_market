@@ -91,10 +91,12 @@ class CryptoSupabaseStore:
                 )
                 net_pnl = Decimal("0.00")
                 outcome = None
+                entry_fee = (entry * qty * Decimal("0.0005")).quantize(Decimal("0.01")) if entry > 0 else Decimal("0.00")
+                exit_fee = Decimal("0.00")
                 if status == "CLOSED" and exit_px and entry > 0:
-                    net_pnl = (
-                        ((exit_px - entry) * qty) if direction == "LONG" else ((entry - exit_px) * qty)
-                    ).quantize(Decimal("0.01"))
+                    exit_fee = (exit_px * qty * Decimal("0.0005")).quantize(Decimal("0.01"))
+                    gross_pnl = ((exit_px - entry) * qty) if direction == "LONG" else ((entry - exit_px) * qty)
+                    net_pnl = (gross_pnl - entry_fee - exit_fee).quantize(Decimal("0.01"))
                     outcome = "WIN" if net_pnl > 0 else ("LOSS" if net_pnl < 0 else "BREAKEVEN")
 
                 restored.append(CryptoPaperPosition(
@@ -105,6 +107,7 @@ class CryptoSupabaseStore:
                     entry_fill_price=entry, stop_loss=sl, initial_stop_loss=sl, target_price=target,
                     status=status, exit_fill_price=exit_px,
                     exit_reason="SUPABASE_RESTORED" if status == "CLOSED" else None,
+                    entry_fee_usdt=entry_fee, exit_fee_usdt=exit_fee,
                     net_pnl_usdt=net_pnl, outcome=outcome,
                     opened_at_ist=created_ist, closed_at_ist=closed_ist,
                     rationale="Restored permanently from Supabase",
@@ -236,6 +239,11 @@ class CryptoSupabaseStore:
         return restored
 
     def upsert_spot_position(self, pos: SpotPosition) -> Dict[str, Any]:
+        # Bug #9 fix: preserve original opened_at_ist timestamp across DCA #2 / #3 upserts
+        try:
+            orig_ts = int(datetime.datetime.fromisoformat(pos.opened_at_ist).timestamp()) if pos.opened_at_ist else int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        except Exception:
+            orig_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
         row = {
             "id": pos.position_id,
             "symbol": pos.symbol,
@@ -246,7 +254,7 @@ class CryptoSupabaseStore:
             "stop_loss_inr": 0.0,
             "hold_label": f"{pos.mode}|{pos.tranches_filled}|{pos.max_tranches}|{pos.budget_usdt}|{pos.target_net_pct}|{pos.first_entry_price}|{pos.total_qty}|{pos.buy_fees_usdt}|{pos.tg_message_id or 0}",
             "status": "HOLDING",
-            "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
+            "created_at": orig_ts,
         }
         try:
             self._request("POST", "paper_trades", row, prefer="resolution=merge-duplicates")
