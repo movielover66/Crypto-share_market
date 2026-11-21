@@ -472,3 +472,97 @@ def evaluate_engine_4_shadow_sweep(
         passed_rules=passed, failed_rules=failed,
         rationale=f"Institutional Stop-Hunt {direction} Sweep on {symbol}: Footprint Delta {dpct:+.1f}%, Crowd {crowd_state}.",
     )
+
+
+def evaluate_engine_5_crash_short(
+    symbol: str,
+    c15: List[CryptoCandle],
+    c1h: List[CryptoCandle],
+    depth: Dict[str, Any],
+    footprint: Optional[Dict[str, Any]] = None,
+    change_24h_pct: Decimal = Decimal("0"),
+    btc_chg_24h: Decimal = Decimal("0"),
+    macro_reason: str = "",
+) -> CryptoSignal:
+    """
+    Engine 5: Institutional Bear-Crash Momentum & Dead-Cat Bounce Rejection SHORT.
+    Activates when BTC crashes <= -4.0% (or bearish macro catalyst fires) to profit from downside momentum:
+    - 1h trend strictly bearish (close < 1h EMA-20)
+    - 15m Dead-Cat Bounce Rejection at EMA-20 OR fresh 6-bar breakdown (avoids blind bottom-tick shorting)
+    - Confirmed by OKX Live Footprint Sell Flow (delta <= -8%) & L2 Sell Pressure (buy_pct <= 48%)
+    """
+    if len(c15) < 25 or len(c1h) < 20:
+        return CryptoSignal(symbol, "ENGINE_5_CRASH_SHORT", "intraday", "Crash Momentum • 2–12 hrs", "SHORT", "REJECTED", 0, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("1.5"), [], ["Insufficient candles"], "Need 15m+1h candles.")
+
+    if btc_chg_24h > Decimal("-4.0") and not macro_reason:
+        return CryptoSignal(symbol, "ENGINE_5_CRASH_SHORT", "intraday", "Crash Momentum • 2–12 hrs", "SHORT", "REJECTED", 20, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("1.5"), [], ["No active BTC crash regime"], "BTC not in crash regime.")
+
+    last15 = c15[-1]
+    closes15 = [c.close for c in c15]
+    closes1h = [c.close for c in c1h]
+    ema20_15 = _ema(closes15, 20) or last15.close
+    ema20_1h = _ema(closes1h, 20) or c1h[-1].close
+    atr15 = _atr(c15, 14)
+
+    passed: List[str] = []
+    failed: List[str] = []
+    score = 35
+
+    if c1h[-1].close < ema20_1h:
+        passed.append("1h Downtrend Confirmed")
+        score += 18
+    else:
+        failed.append("1h Above EMA-20")
+
+    # Dead-cat bounce rejection off 15m EMA-20 OR fresh 6-bar breakdown
+    prior6_low = min(c.low for c in c15[-7:-1])
+    bounce_reject = (last15.high >= ema20_15 * Decimal("0.994")) and (last15.close < last15.open) and (last15.close < ema20_15 * Decimal("1.002"))
+    fresh_breakdown = last15.close < prior6_low and last15.close < last15.open
+    if bounce_reject:
+        passed.append("15m Dead-Cat Bounce Rejected at EMA-20")
+        score += 22
+    elif fresh_breakdown:
+        passed.append("15m Consolidation Breakdown")
+        score += 20
+    else:
+        failed.append("No Bounce Rejection / Breakdown Yet")
+
+    buy_pct = float((depth or {}).get("buy_pct", 50.0))
+    dpct = float((footprint or {}).get("delta_pct", 0.0))
+    if dpct <= -8.0 and buy_pct <= 49.0:
+        passed.append(f"Footprint Sell Flow ({dpct:+.1f}%) • L2 {buy_pct:.0f}% Buy")
+        score += 20
+    else:
+        failed.append(f"Weak Sell Flow (CVD {dpct:+.1f}%, L2 {buy_pct:.0f}%)")
+
+    if btc_chg_24h <= Decimal("-4.0"):
+        passed.append(f"BTC Crash Momentum ({btc_chg_24h}%)")
+        score += 8
+    if macro_reason:
+        passed.append("Bearish Macro Catalyst Active")
+        score += 6
+
+    entry = _quant(last15.close)
+    risk = max(atr15 * Decimal("1.65"), entry * Decimal("0.017"))
+    risk = min(risk, entry * Decimal("0.028"))  # Hard 2.8% SL cap so crash shorts never blow up
+    sl = _quant(entry + risk)
+    target = _quant(entry - risk * Decimal("2.6"))
+    status = "CONFIRMED" if (score >= 82 and len(failed) == 0) else ("WATCHLIST" if score >= 68 else "REJECTED")
+    why_macro = f" • Cause: {macro_reason[:85]}" if macro_reason else f" • BTC {btc_chg_24h}% Crash"
+    return CryptoSignal(
+        symbol=symbol,
+        engine_code="ENGINE_5_CRASH_SHORT",
+        horizon_bucket="intraday",
+        hold_horizon="Crash Momentum • 2–12 hrs",
+        direction="SHORT",
+        status=status,
+        score=min(97, score),
+        entry_price=entry,
+        stop_loss=sl,
+        target_price=target,
+        expected_net_rr=Decimal("2.50"),
+        recommended_leverage=Decimal("1.5"),
+        passed_rules=passed,
+        failed_rules=failed,
+        rationale=f"Crash Momentum SHORT on {symbol} (CVD {dpct:+.1f}%){why_macro}",
+    )
