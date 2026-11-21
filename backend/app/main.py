@@ -42,7 +42,9 @@ from .domain.portfolio_manager import (
     check_risk_firewall,
     evaluate_soft_bias,
 )
+from .domain.chart_reader import evaluate_12pt_chart_read
 from .domain.smc_filter import evaluate_smc_context
+from .services.coin_verifier import CoinFundamentalVerifier
 from .domain.spot_vault import (
     BLUECHIP_SPOT_UNIVERSE,
     SpotVaultEngine,
@@ -280,20 +282,15 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 bull_catalysts.setdefault(c.upper(), f"{n.get('tag')}: {n.get('headline', '')[:90]}")
 
     signals: List[CryptoSignal] = []
+    coin_verifier: CoinFundamentalVerifier = app.state.coin_verifier
+    # Gate 1 (Stage 1 Fast Screener): 534+ OKX -> Top 15-20 Verified Pure-Crypto Coins (0% US Stocks / Junk)
+    scan_syms, gate1_rejected = coin_verifier.select_verified_candidates(tickers, max_candidates=18)
     liquid_all = [
         t for t in tickers.values()
-        if t.symbol.endswith("USDT") and t.ltp > 0 and t.volume_24h_usdt >= Decimal("5000000")
+        if t.symbol.endswith("USDT") and t.ltp > 0 and coin_verifier.verify_symbol(t.symbol, t.volume_24h_usdt).verified
     ]
     if not liquid_all:
-        liquid_all = list(tickers.values())
-
-    by_vol = sorted(liquid_all, key=lambda t: t.volume_24h_usdt, reverse=True)[:10]
-    by_mom = sorted(
-        [t for t in liquid_all if Decimal("2.5") <= abs(t.change_24h_pct) <= Decimal("26.0")],
-        key=lambda t: abs(t.change_24h_pct),
-        reverse=True,
-    )[:6]
-    scan_syms = list(dict.fromkeys([t.symbol for t in by_vol] + [t.symbol for t in by_mom]))
+        liquid_all = [t for t in tickers.values() if t.symbol.endswith("USDT") and t.ltp > 0]
     trap_judge: GeminiTrapJudge = app.state.trap_judge
     btc_chg = tickers["BTCUSDT"].change_24h_pct if "BTCUSDT" in tickers else Decimal("0")
     for sym in scan_syms:
@@ -441,19 +438,62 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             if not bias_dec.allowed:
                 continue
 
-            # Layer 3B: Gemini Trap Judge Veto
+            # Gate 4 & 5A: Full 12-Point Professional Chart Reader (Closed Candles, Vol Profile, BOS/CHoCH, 50-Level L2 Walls)
+            c15_now = prov.get_candles(sig.symbol, "15m", 40)
+            c1h_now = prov.get_candles(sig.symbol, "1h", 35)
+            c4h_now = prov.get_candles(sig.symbol, "4h", 40)
+            depth_now = prov.get_orderbook_depth(sig.symbol)
+            btc_1h_now = prov.get_candles("BTCUSDT", "1h", 30)
+            cr = evaluate_12pt_chart_read(
+                symbol=sig.symbol,
+                direction=sig.direction,
+                c15=c15_now,
+                c1h=c1h_now,
+                c4h=c4h_now,
+                depth=depth_now,
+                footprint=fp_now,
+                ticker=tickers.get(sig.symbol),
+                btc_1h=btc_1h_now,
+                demo_mode=prov.demo_mode,
+            )
+            if not cr.passed:
+                continue
+
+            # Gate 5B: Zero-Bypass Gemini Vision Chart PNG + 12-Point Map Final Audit
             sym_chg_now = float(tickers[sig.symbol].change_24h_pct) if sig.symbol in tickers else 0.0
-            verdict = trap_judge.evaluate_trade({
-                "symbol": sig.symbol, "direction": sig.direction, "engine_code": sig.engine_code,
-                "change_24h_pct": sym_chg_now, "footprint_delta_pct": fp_now.get("delta_pct", 0.0),
-                "cvd_bias": fp_now.get("cvd_bias", "NEUTRAL"), "score": sig.score, "macro_headline": bear_macro_headline,
-            })
+            verdict = trap_judge.evaluate_chart_vision(
+                symbol=sig.symbol,
+                direction=sig.direction,
+                candles=c15_now,
+                price_map=cr.price_map,
+                features={
+                    "symbol": sig.symbol, "direction": sig.direction, "engine_code": sig.engine_code,
+                    "change_24h_pct": sym_chg_now, "footprint_delta_pct": fp_now.get("delta_pct", 0.0),
+                    "cvd_bias": fp_now.get("cvd_bias", "NEUTRAL"), "score": sig.score,
+                    "points_12pt": f"{cr.points_passed}/12", "macro_headline": bear_macro_headline,
+                },
+            )
             if verdict.get("verdict") == "VETO_TRAP":
                 continue
 
-            # Layer 6: Execution with Equal-Risk Volatility Sizing (₹500 / 0.5x Counter-Trend)
+            # Upgrade signal with Structural SL & Structural TP from 12-Point Chart Reader
+            sig_exec = CryptoSignal(
+                symbol=sig.symbol, engine_code=sig.engine_code, horizon_bucket=sig.horizon_bucket,
+                hold_horizon=sig.hold_horizon, direction=sig.direction, status=sig.status,
+                score=max(sig.score, cr.score_12pt),
+                entry_price=sig.entry_price,
+                stop_loss=cr.structural_sl if cr.structural_sl > 0 else sig.stop_loss,
+                target_price=cr.structural_tp if cr.structural_tp > 0 else sig.target_price,
+                expected_net_rr=sig.expected_net_rr,
+                recommended_leverage=sig.recommended_leverage,
+                passed_rules=list(sig.passed_rules) + [f"12-Pt Reader {cr.points_passed}/12"],
+                failed_rules=sig.failed_rules,
+                rationale=f"[12-Pt {cr.points_passed}/12 | POC ${cr.price_map.get('poc')}] {sig.rationale}",
+            )
+
+            # Gate 6: Execution with Structural SL + Equal-Risk ₹500 Volatility Sizing
             pos = eng.open_position(
-                sig,
+                sig_exec,
                 now_ist,
                 paper_store=store,
                 telegram_notifier=tg,
@@ -569,7 +609,7 @@ async def _crypto_24_7_scheduler(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     cfg = get_settings()
-    app = FastAPI(title="TRADEIQ Crypto Pro v2.0", version="2.0.0")
+    app = FastAPI(title="TRADEIQ Crypto Pro v2.1", version="2.1.0")
     app.state.cfg = cfg
     app.state.provider = MultiExchangeCryptoProvider(demo_mode=cfg.demo_mode)
     app.state.strategy_cfg = StrategyConfig()
@@ -580,6 +620,7 @@ def create_app() -> FastAPI:
     app.state.news_svc = CryptoCatalystNewsService(demo_mode=cfg.demo_mode)
     app.state.tg = CryptoTelegramNotifier(cfg.telegram_bot_token, cfg.telegram_chat_id)
     app.state.trap_judge = GeminiTrapJudge(cfg.gemini_api_keys)
+    app.state.coin_verifier = CoinFundamentalVerifier(demo_mode=cfg.demo_mode)
     app.state._scheduler_task = None
 
     @app.on_event("startup")
@@ -840,6 +881,12 @@ def create_app() -> FastAPI:
         depth = await asyncio.to_thread(app.state.provider.get_orderbook_depth, sym)
         fp = await asyncio.to_thread(app.state.provider.get_footprint_cvd, sym)
         t_obj = app.state.provider.ticker_cache.get(sym)
+        c15 = candles if interval == "15m" else await asyncio.to_thread(app.state.provider.get_candles, sym, "15m", 40)
+        c1h = await asyncio.to_thread(app.state.provider.get_candles, sym, "1h", 35)
+        c4h = await asyncio.to_thread(app.state.provider.get_candles, sym, "4h", 35)
+        btc_1h = await asyncio.to_thread(app.state.provider.get_candles, "BTCUSDT", "1h", 30)
+        cr_long = evaluate_12pt_chart_read(sym, "LONG", c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode)
+        cver = app.state.coin_verifier.verify_symbol(sym, t_obj.volume_24h_usdt if t_obj else Decimal("0"))
         return {
             "symbol": sym,
             "interval": interval,
@@ -848,6 +895,28 @@ def create_app() -> FastAPI:
             "candles": [{"ts_ms": c.ts_ms, "o": str(c.open), "h": str(c.high), "l": str(c.low), "c": str(c.close), "v": str(c.volume)} for c in candles],
             "depth": depth,
             "footprint": fp,
+            "coin_verification": {"verified": cver.verified, "category": cver.category, "reason": cver.reason},
+            "chart_read": cr_long.to_dict(),
+        }
+
+    @app.get("/api/v1/crypto/chart-read/{symbol}")
+    async def crypto_chart_read(symbol: str, direction: str = Query("LONG"), _owner: str = Depends(require_owner)):
+        sym = symbol.strip().upper()
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
+        t_obj = tickers.get(sym)
+        cver = app.state.coin_verifier.verify_symbol(sym, t_obj.volume_24h_usdt if t_obj else Decimal("0"))
+        c15 = await asyncio.to_thread(app.state.provider.get_candles, sym, "15m", 40)
+        c1h = await asyncio.to_thread(app.state.provider.get_candles, sym, "1h", 35)
+        c4h = await asyncio.to_thread(app.state.provider.get_candles, sym, "4h", 35)
+        btc_1h = await asyncio.to_thread(app.state.provider.get_candles, "BTCUSDT", "1h", 30)
+        depth = await asyncio.to_thread(app.state.provider.get_orderbook_depth, sym)
+        fp = await asyncio.to_thread(app.state.provider.get_footprint_cvd, sym)
+        cr = evaluate_12pt_chart_read(sym, direction, c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode)
+        return {
+            "coin_verification": {"verified": cver.verified, "category": cver.category, "reason": cver.reason},
+            "chart_read": cr.to_dict(),
         }
 
     @app.put("/api/v1/crypto/config")
@@ -892,6 +961,9 @@ def create_app() -> FastAPI:
         direction = payload.direction.strip().upper()
         if direction not in ("LONG", "SHORT"):
             raise HTTPException(status_code=400, detail="direction must be LONG or SHORT")
+        cver = app.state.coin_verifier.verify_symbol(sym, Decimal("50000000"))
+        if not cver.verified:
+            return {"accepted": False, "reason": cver.reason}
 
         tickers = await asyncio.to_thread(app.state.provider.refresh_all_tickers)
         t_obj = tickers.get(sym)
