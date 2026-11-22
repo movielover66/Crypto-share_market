@@ -233,21 +233,26 @@ class MultiExchangeCryptoProvider:
 
         return self.ticker_cache
 
-    def get_candles(self, symbol: str, interval: str = "15m", limit: int = 120) -> List[CryptoCandle]:
+    def get_candles(self, symbol: str, interval: str = "15m", limit: int = 120, before_ts_ms: Optional[int] = None) -> List[CryptoCandle]:
         sym = symbol.upper()
         if self.demo_mode:
-            return self._demo_candles(sym, interval, limit)
+            return self._demo_candles(sym, interval, limit, before_ts_ms=before_ts_ms)
 
-        key = (sym, interval)
+        key = (sym, interval, int(limit), int(before_ts_ms or 0))
         cached = self.candle_cache.get(key)
-        ttl = 8.0 if interval == "1m" else 35.0
+        ttl = 300.0 if before_ts_ms else (8.0 if interval == "1m" else 35.0)
         if cached and (time.time() - cached[0]) < ttl:
             return cached[1]
 
-        # 1. Primary: OKX v5 Candles (fast on Render US IPs)
+        # 1. Primary: OKX v5 Candles / History-Candles (supports up to 300 per call & deep pagination)
         okx_sym = sym[:-4] + "-USDT-SWAP" if sym.endswith("USDT") else sym
         o_int = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}.get(interval, "15m")
-        odata = _http_get_json(f"https://www.okx.com/api/v5/market/candles?instId={urllib.parse.quote(okx_sym)}&bar={o_int}&limit={min(limit, 100)}", timeout=5.0)
+        lim = max(1, min(int(limit), 300))
+        if before_ts_ms:
+            okx_url = f"https://www.okx.com/api/v5/market/history-candles?instId={urllib.parse.quote(okx_sym)}&bar={o_int}&after={int(before_ts_ms)}&limit={lim}"
+        else:
+            okx_url = f"https://www.okx.com/api/v5/market/candles?instId={urllib.parse.quote(okx_sym)}&bar={o_int}&limit={lim}"
+        odata = _http_get_json(okx_url, timeout=6.0)
         orows = (odata or {}).get("data") or []
         out: List[CryptoCandle] = []
         if orows:
@@ -265,7 +270,9 @@ class MultiExchangeCryptoProvider:
 
         # 2. Failover: Bybit v5 Candles
         b_int = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}.get(interval, "15")
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={urllib.parse.quote(sym)}&interval={b_int}&limit={limit}"
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={urllib.parse.quote(sym)}&interval={b_int}&limit={min(lim, 200)}"
+        if before_ts_ms:
+            url += f"&end={int(before_ts_ms) - 1}"
         data = _http_get_json(url, timeout=5.0)
         rows = (((data or {}).get("result") or {}).get("list")) or []
         out: List[CryptoCandle] = []
@@ -436,11 +443,11 @@ class MultiExchangeCryptoProvider:
             )
         return self.ticker_cache
 
-    def _demo_candles(self, symbol: str, interval: str, limit: int) -> List[CryptoCandle]:
+    def _demo_candles(self, symbol: str, interval: str, limit: int, before_ts_ms: Optional[int] = None) -> List[CryptoCandle]:
         self._demo_tickers()
         base = float(self.ticker_cache.get(symbol, CryptoTicker(symbol, Decimal("100"), Decimal("98"), Decimal("2"), Decimal("1000000"), Decimal("0.0001"), Decimal("100000"), "DEMO", time.time())).ltp)
         out: List[CryptoCandle] = []
-        now_ms = int(time.time() * 1000)
+        now_ms = int(before_ts_ms) - step_ms if before_ts_ms else int(time.time() * 1000)
         step_ms = {"1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}.get(interval, 900000)
         for i in range(limit):
             drift = 0.88 + (i / max(1, limit)) * 0.12 + math.sin(i * 0.35) * 0.008
