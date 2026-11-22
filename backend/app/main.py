@@ -230,6 +230,7 @@ def _run_spot_vault_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[st
                 store=store,
                 tg=tg,
                 usdt_inr=usdt_inr,
+                brain_context=(f"{brain_dir.mode.replace('_', ' ')} ({brain_dir.score:+d})" if brain_dir else ""),
             )
             active_syms.add(sym)
             opened.append({"position_id": pos.position_id, "symbol": sym, "avg_entry": str(pos.avg_entry_price)})
@@ -501,6 +502,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 strategy_cfg=strat_cfg,
                 risk_multiplier=bias_dec.risk_multiplier,
                 bias_tag=bias_dec.bias_tag,
+                brain_context=(f"{brain_dir.mode.replace('_', ' ')} ({brain_dir.score:+d})" if brain_dir else ""),
             )
             opened.append({
                 "position_id": pos.position_id,
@@ -590,7 +592,8 @@ async def _crypto_24_7_scheduler(app: FastAPI) -> None:
                 sled = app.state.spot_vault.vault_ledger(ltps, usdt_inr)
                 b_dir = app.state.brain.current_directive
                 b_txt = f"{b_dir.mode} ({b_dir.score:+d}/100)" if b_dir else "SYNCING"
-                app.state.tg.send_alert(
+                if False:  # Muted extra non-trade messages per owner preference
+                    app.state.tg.send_alert(
                     f"DAILY CRYPTO SUMMARY — {today}",
                     f"🧠 Market Brain: {b_txt}\n"
                     f"💼 Perp Equity: ${led['total_equity_usdt']} (₹{led['total_equity_inr']}) | Net: ${led['total_net_usdt']}\n"
