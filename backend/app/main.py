@@ -638,9 +638,25 @@ def create_app() -> FastAPI:
                 app.state.engine.positions[pos.position_id] = pos
             today_ist = datetime.datetime.now(IST).strftime("%Y-%m-%d")
             app.state.engine.tg_sent_date = today_ist
-            app.state.engine.tg_sent_today = sum(
-                1 for p in app.state.engine.positions.values()
-                if p.tier == "ELITE_TG" and (p.opened_at_ist or "").startswith(today_ist)
+            rst_after = getattr(app.state.engine, "tg_reset_after_ist", "") or ""
+            try:
+                import json as _json
+                _rp = "/tmp/tradeiq_tg_reset.json"
+                if not rst_after and os.path.exists(_rp):
+                    _rd = _json.loads(open(_rp).read() or "{}")
+                    if _rd.get("date") == today_ist and _rd.get("reset_after_ist"):
+                        rst_after = _rd["reset_after_ist"]
+                        app.state.engine.tg_reset_after_ist = rst_after
+            except Exception:
+                pass
+            app.state.engine.tg_sent_today = min(
+                app.state.engine.config.telegram_daily_cap,
+                sum(
+                    1 for p in app.state.engine.positions.values()
+                    if p.tier == "ELITE_TG"
+                    and (p.opened_at_ist or "").startswith(today_ist)
+                    and (not rst_after or (p.opened_at_ist or "") >= rst_after)
+                ),
             )
             spot_restored = await asyncio.to_thread(app.state.store.fetch_spot_positions)
             for spos in spot_restored:
@@ -1067,8 +1083,18 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/telegram/reset-counter")
     async def reset_tg_counter(_owner: str = Depends(require_owner)):
+        now_rst = datetime.datetime.now(IST)
         app.state.engine.tg_sent_today = 0
-        app.state.engine.tg_sent_date = datetime.datetime.now(IST).strftime("%Y-%m-%d")
+        app.state.engine.tg_sent_date = now_rst.strftime("%Y-%m-%d")
+        app.state.engine.tg_reset_after_ist = now_rst.isoformat()
+        try:
+            import json as _json
+            open("/tmp/tradeiq_tg_reset.json", "w").write(_json.dumps({
+                "date": app.state.engine.tg_sent_date,
+                "reset_after_ist": app.state.engine.tg_reset_after_ist,
+            }))
+        except Exception:
+            pass
         return {
             "reset": True,
             "tg_sent_today": 0,
