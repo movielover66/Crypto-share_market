@@ -354,6 +354,7 @@ class CryptoPaperEngine:
         telegram_notifier: Optional[Any] = None,
         usdt_inr: Optional[Decimal] = None,
         disable_kill_switch: bool = False,
+        regime_mode: str = "TRENDING",
     ) -> List[Dict[str, Any]]:
         if usdt_inr and usdt_inr > Decimal("50"):
             self.last_usdt_inr = usdt_inr
@@ -385,18 +386,18 @@ class CryptoPaperEngine:
                 actions.append({"action": reason, "symbol": pos.symbol, "net_pnl_usdt": str(pos.net_pnl_usdt)})
                 continue
 
-            # 1.5R Charge-Buffered Breakeven
-            if not pos.breakeven_shifted and live_r >= Decimal("1.00"):
-                buf = pos.entry_fill_price * Decimal("0.0018")
+            # 1.15R Charge-Buffered Breakeven (prevents premature wick-outs at 1.0R; covers 0.20% round-trip fees)
+            if not pos.breakeven_shifted and live_r >= Decimal("1.15"):
+                buf = pos.entry_fill_price * Decimal("0.0020")
                 be = _quant(pos.entry_fill_price + buf if pos.direction == "LONG" else pos.entry_fill_price - buf)
                 if (pos.direction == "LONG" and be > pos.stop_loss) or (pos.direction == "SHORT" and be < pos.stop_loss):
                     pos.stop_loss = be
                     pos.breakeven_shifted = True
                     actions.append({"action": "BREAKEVEN_SHIFT", "symbol": pos.symbol, "new_sl": str(be)})
 
-            # 2.0R Trailing SL
-            if live_r >= Decimal("2.00"):
-                trail = _quant(ltp - init_risk * Decimal("0.85") if pos.direction == "LONG" else ltp + init_risk * Decimal("0.85"))
+            # Regime-Adaptive Trailing SL: Disabled in SIDEWAYS_RANGE (clean fixed TP); 1.0x ATR-equivalent trail in TRENDING after 2.0R
+            if (regime_mode or "").upper() != "SIDEWAYS_RANGE" and live_r >= Decimal("2.00"):
+                trail = _quant(ltp - init_risk * Decimal("1.00") if pos.direction == "LONG" else ltp + init_risk * Decimal("1.00"))
                 if (pos.direction == "LONG" and trail > pos.stop_loss) or (pos.direction == "SHORT" and trail < pos.stop_loss):
                     pos.stop_loss = trail
                     pos.trailing_active = True
