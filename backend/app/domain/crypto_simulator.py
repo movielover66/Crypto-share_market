@@ -112,6 +112,7 @@ class CryptoPaperEngine:
         self.consecutive_losses: int = 0
         self.tg_sent_date: str = ""
         self.tg_sent_today: int = 0
+        self.tg_reset_after_ist: str = ""
         self.last_regime: Optional[CryptoRegime] = None
         self.last_signals: List[Dict[str, Any]] = []
         self.last_boom_items: List[Dict[str, Any]] = []
@@ -193,12 +194,13 @@ class CryptoPaperEngine:
             planned_risk_inr = (notional * sl_dist * eff_fx).quantize(Decimal("0.01"))
         entry_fee = (notional * TAKER_FEE_RATE).quantize(Decimal("0.01"))
 
-        # Decide Two-Tier status: ELITE_TG (capped 5-7/day) vs BACKEND_LAB
+        # Decide Two-Tier status: BOOM stays in its own BOOM tier; ELITE_TG is strictly capped at telegram_daily_cap
         is_elite = (
-            sig.score >= self.config.elite_min_score
+            not is_boom
+            and sig.score >= self.config.elite_min_score
             and self.tg_sent_today < self.config.telegram_daily_cap
         )
-        tier = "ELITE_TG" if is_elite else ("BOOM" if is_boom else "BACKEND_LAB")
+        tier = "BOOM" if is_boom else ("ELITE_TG" if is_elite else "BACKEND_LAB")
 
         pos = CryptoPaperPosition(
             position_id=f"CR-{uuid.uuid4().hex[:10].upper()}",
