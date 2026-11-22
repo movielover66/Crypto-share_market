@@ -190,6 +190,7 @@ def evaluate_12pt_chart_read(
     ticker: Optional[Any] = None,
     btc_1h: Optional[List[Any]] = None,
     demo_mode: bool = False,
+    regime_mode: str = "TRENDING",
 ) -> ChartReadResult:
     """
     Full 12-Point Institutional Chart Reader (Gate 4 & Gate 5).
@@ -279,6 +280,9 @@ def evaluate_12pt_chart_read(
 
     min_risk = max(atr15 * Decimal("1.8"), entry * Decimal("0.020"))
     max_risk = entry * Decimal("0.042")
+    is_sideways = (regime_mode or "").upper() == "SIDEWAYS_RANGE"
+    tp_cap_mult = Decimal("2.0") if is_sideways else Decimal("2.3")
+    tp_floor_mult = Decimal("1.8") if is_sideways else Decimal("2.0")
     if d == "LONG":
         raw_sl = min(sw_lo - atr15 * Decimal("0.35"), entry - min_risk)
         risk = max(min_risk, min(max_risk, entry - raw_sl))
@@ -288,9 +292,9 @@ def evaluate_12pt_chart_read(
         obstacles = [x for x in (vp["hvns"] + ([ask_wall_px] if ask_wall_px > 0 else []) + [pdh]) if x > entry_f * 1.006]
         nearest_obs = min(obstacles) if obstacles else float(entry + risk * Decimal("2.4"))
         room_rr = (nearest_obs - entry_f) / max(1e-9, float(risk))
-        struct_tp = _quant(min(Decimal(str(nearest_obs * 0.997)), entry + risk * Decimal("2.3")))
+        struct_tp = _quant(min(Decimal(str(nearest_obs * 0.997)), entry + risk * tp_cap_mult))
         if struct_tp <= entry + risk * Decimal("1.4"):
-            struct_tp = _quant(entry + risk * Decimal("2.0"))
+            struct_tp = _quant(entry + risk * tp_floor_mult)
     else:
         raw_sl = max(sw_hi + atr15 * Decimal("0.35"), entry + min_risk)
         risk = max(min_risk, min(max_risk, raw_sl - entry))
@@ -299,9 +303,9 @@ def evaluate_12pt_chart_read(
         obstacles = [x for x in (vp["hvns"] + ([bid_wall_px] if bid_wall_px > 0 else []) + [pdl]) if 0 < x < entry_f * 0.994]
         nearest_obs = max(obstacles) if obstacles else float(entry - risk * Decimal("2.4"))
         room_rr = (entry_f - nearest_obs) / max(1e-9, float(risk))
-        struct_tp = _quant(max(Decimal(str(nearest_obs * 1.003)), entry - risk * Decimal("2.3")))
+        struct_tp = _quant(max(Decimal(str(nearest_obs * 1.003)), entry - risk * tp_cap_mult))
         if struct_tp >= entry - risk * Decimal("1.4"):
-            struct_tp = _quant(entry - risk * Decimal("2.0"))
+            struct_tp = _quant(entry - risk * tp_floor_mult)
 
     obs_ok = room_rr >= 1.35 or demo_mode
     _add(6, "HVN/Obstacle Room-to-Run", obs_ok, f"Nearest Obstacle ${nearest_obs:.4f} (Room {room_rr:.2f}R)", hard_fail=not obs_ok)
