@@ -390,12 +390,18 @@ class MarketBrainEngine:
         f3 = int(round((avg_cvd / 40.0) * 14.0 + ((buy_pct - 50.0) / 25.0) * 6.0))
         f3 = max(-20, min(20, f3))
 
-        # ── Layer 4: Live Macro & Catalyst News Sentiment (±15 pts) ───────────────
+        # ── Layer 4: Live MACRO-ONLY News Sentiment (±15 pts) ────────────────────
+        # Single-coin hacks (e.g. Chainflip) only block that coin — ONLY systemic macro/BTC/ETF
+        # headlines can move the Market Brain!
+        macro_kws = ("FED", "FOMC", "CPI", "INFLATION", "RATE", "TREASURY", "ETF", "BITCOIN", "BTC", "SEC", "TARIFF", "WAR", "RECESSION", "LIQUIDATION", "MACRO", "POWELL")
         bull_n = 0
         bear_n = 0
         top_bear_hl = ""
         top_bull_hl = ""
         for n in (news_items or [])[:12]:
+            hl_up = f"{n.get('tag', '')} {n.get('headline', '')}".upper()
+            if not any(k in hl_up for k in macro_kws):
+                continue
             imp = n.get("impact", "NEUTRAL")
             if imp == "HIGH_RISK":
                 bear_n += 1
@@ -425,6 +431,14 @@ class MarketBrainEngine:
         f6 = max(-5, min(5, f6))
 
         raw_score = max(-100, min(100, f1 + f2 + f3 + f4 + f5 + f6))
+        # Broad-Breadth Sanity Guard: a 62%+ Green market with BTC >= 0% cannot flip into DOWNTREND
+        if green_pct >= 62.0 and btc_chg >= 0.0 and raw_score < -10:
+            raw_score = -10
+        if green_pct >= 72.0 and btc_chg >= 2.5 and raw_score < 20:
+            raw_score = 20
+        if red_pct >= 62.0 and btc_chg <= 0.0 and raw_score > 10:
+            raw_score = 10
+
         emergency_crash = (btc_chg <= -5.0 and red_pct >= 72.0) or (btc_chg <= -6.5)
         if emergency_crash and raw_score > -48:
             raw_score = -55
