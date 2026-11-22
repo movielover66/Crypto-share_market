@@ -261,8 +261,9 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     strat_cfg: StrategyConfig = app.state.strategy_cfg
     ltp_map = {s: t.ltp for s, t in tickers.items()}
     disable_ks = strat_cfg.unlimited_paper_mode and strat_cfg.disable_kill_switch_in_unlimited
+    cur_regime = app.state.brain.current_directive.mode if app.state.brain.current_directive else "TRENDING"
     monitor_actions = eng.monitor_open_positions(
-        ltp_map, now_ist, store, tg, usdt_inr=usdt_inr, disable_kill_switch=disable_ks
+        ltp_map, now_ist, store, tg, usdt_inr=usdt_inr, disable_kill_switch=disable_ks, regime_mode=cur_regime
     )
 
     # Bug #1 fix: MarketBrainEngine is the SINGLE regime source of truth (no dual Engine 0 conflict)
@@ -357,7 +358,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 hold_horizon="Daily Boom Radar • 1x Micro-Size", direction="LONG",
                 status="CONFIRMED", score=int(b_item["score"]),
                 entry_price=Decimal(b_item["entry_price"]), stop_loss=Decimal(b_item["stop_loss"]),
-                target_price=Decimal(b_item["target_price"]), expected_net_rr=Decimal("2.80"),
+                target_price=Decimal(b_item["target_price"]), expected_net_rr=Decimal("1.90"),
                 recommended_leverage=Decimal("1.0"), passed_rules=b_item["checks"], failed_rules=[],
                 rationale=f"Boom Radar 1x breakout on {sym}: 24h {b_item['change_24h_pct']}%, 15m Vol {b_item['rel_vol_15m']}x.",
             ))
@@ -456,6 +457,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 ticker=tickers.get(sig.symbol),
                 btc_1h=btc_1h_now,
                 demo_mode=prov.demo_mode,
+                regime_mode=(brain_dir.mode if brain_dir else "TRENDING"),
             )
             if not cr.passed:
                 continue
@@ -552,9 +554,10 @@ async def _crypto_24_7_scheduler(app: FastAPI) -> None:
                     usdt_inr = app.state.provider.get_usdt_inr()
                     if open_pos:
                         dis_ks = app.state.strategy_cfg.unlimited_paper_mode and app.state.strategy_cfg.disable_kill_switch_in_unlimited
+                        bg_regime = app.state.brain.current_directive.mode if app.state.brain.current_directive else "TRENDING"
                         await asyncio.to_thread(
                             app.state.engine.monitor_open_positions,
-                            ltps, now_ist, app.state.store, app.state.tg, usdt_inr, dis_ks,
+                            ltps, now_ist, app.state.store, app.state.tg, usdt_inr, dis_ks, bg_regime,
                         )
                     if open_spot:
                         fps = {
@@ -878,9 +881,15 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/v1/crypto/chart/{symbol}")
-    async def crypto_chart(symbol: str, interval: str = Query("1m"), direction: str = Query("LONG"), _owner: str = Depends(require_owner)):
+    async def crypto_chart(symbol: str, interval: str = Query("1m"), direction: str = Query("LONG"), limit: int = Query(300, ge=30, le=300), before_ms: Optional[int] = Query(None), _owner: str = Depends(require_owner)):
         sym = symbol.upper()
-        candles = await asyncio.to_thread(app.state.provider.get_candles, sym, interval, 100)
+        candles = await asyncio.to_thread(app.state.provider.get_candles, sym, interval, limit, before_ms)
+        if before_ms is not None:
+            return {
+                "symbol": sym,
+                "interval": interval,
+                "candles": [{"ts_ms": c.ts_ms, "o": str(c.open), "h": str(c.high), "l": str(c.low), "c": str(c.close), "v": str(c.volume)} for c in candles],
+            }
         depth = await asyncio.to_thread(app.state.provider.get_orderbook_depth, sym)
         fp = await asyncio.to_thread(app.state.provider.get_footprint_cvd, sym)
         t_obj = app.state.provider.ticker_cache.get(sym)
