@@ -37,6 +37,7 @@ class StrategyConfig:
 
     # Layer 5: Risk Firewall
     sl_cooldown_hours: int = 6
+    max_same_direction_cap: int = 4     # Correlation guard: max 4 LONG or 4 SHORT open at once
     disable_kill_switch_in_unlimited: bool = True
 
     # Optional External Webhook Receiver Secret
