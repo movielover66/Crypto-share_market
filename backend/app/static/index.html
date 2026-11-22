@@ -14,6 +14,14 @@
     .card { background: #0E131F; border: 1px solid #1E293B; border-radius: 16px; }
     .drawer-bg { background: rgba(2,6,15,0.78); backdrop-filter: blur(6px); }
     .no-scrollbar::-webkit-scrollbar { display: none; }
+  
+    @keyframes liveCandlePulse {
+      0%, 100% { box-shadow: 0 0 8px rgba(245, 183, 0, 0.55), 0 0 18px rgba(245, 183, 0, 0.25); border-color: rgba(245, 183, 0, 0.90); }
+      50% { box-shadow: 0 0 16px rgba(245, 183, 0, 0.95), 0 0 30px rgba(245, 183, 0, 0.45); border-color: rgba(253, 224, 71, 1); }
+    }
+    .live-candle-halo {
+      animation: liveCandlePulse 1.7s ease-in-out infinite;
+    }
   </style>
 </head>
 <body class="min-h-screen flex flex-col">
@@ -600,10 +608,25 @@
               </div>
               <button onclick="goSec('markets')" class="text-xs font-bold text-[#00D4FF]">Browse All 534+ Coins →</button>
             </div>
-            <div class="relative w-full h-80 rounded-xl overflow-hidden border border-[#1B2436] bg-[#070B12]">
-              <div id="tv-chart-hud" class="pointer-events-none absolute top-2 left-2 z-20 flex flex-wrap gap-1.5 text-[10px] mono"></div>
+            <div id="tv-chart-wrap" class="relative w-full h-[460px] sm:h-[520px] rounded-xl overflow-hidden border border-[#1B2436] bg-[#080B10]">
               <div id="tv-candle-box" class="w-full h-full"></div>
+              <!-- Glowing Live Candle Halo + Analysing Next Entry Pill -->
+              <div id="live-candle-halo" class="pointer-events-none hidden absolute z-20 rounded border-2 live-candle-halo bg-[#F5B700]/10"></div>
+              <div id="live-entry-connector" class="pointer-events-none hidden absolute z-20 border-t border-dashed border-[#F5B700]/45"></div>
+              <div id="live-entry-pill" class="pointer-events-none hidden absolute z-20 flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-[#0E131C]/95 border border-[#F5B700]/45 shadow-lg">
+                <span class="text-[#F5B700] text-xs font-extrabold">⇄</span>
+                <div class="leading-tight text-[10px] font-semibold text-slate-200">Analysing<br/>next entry</div>
+              </div>
+              <!-- Candle Close Countdown Timer on Right Price Axis -->
+              <div id="candle-countdown-badge" class="pointer-events-none hidden absolute right-0.5 z-30 px-1.5 py-0.5 rounded text-[10px] font-extrabold mono text-white shadow"></div>
+              <!-- Clean Zoom +/- Controls -->
+              <div class="absolute right-16 top-2.5 z-30 flex flex-col gap-1">
+                <button onclick="zoomChart(1.25)" title="Zoom In" class="w-7 h-7 rounded-full bg-[#111722]/90 border border-[#263449] text-slate-300 hover:text-white text-xs font-extrabold flex items-center justify-center">+</button>
+                <button onclick="zoomChart(0.8)" title="Zoom Out" class="w-7 h-7 rounded-full bg-[#111722]/90 border border-[#263449] text-slate-300 hover:text-white text-xs font-extrabold flex items-center justify-center">−</button>
+              </div>
             </div>
+            <!-- All HUD Badges Moved OUTSIDE Chart Box -->
+            <div id="tv-chart-hud" class="flex flex-wrap gap-1.5 text-[10px] mono pt-1"></div>
           </div>
           <div id="cr12-box" class="card p-4"></div>
           <div id="fp-box" class="card p-4"></div>
@@ -617,14 +640,15 @@
       const box = document.getElementById('tv-candle-box');
       if (box && window.LightweightCharts && c.length > 0) {
         box.innerHTML = '';
+        const boxH = box.clientHeight || 460;
         tvChart = LightweightCharts.createChart(box, {
-          layout: { background: { type: 'solid', color: '#070B12' }, textColor: '#94A3B8' },
-          grid: { vertLines: { color: '#111827' }, horzLines: { color: '#111827' } },
+          layout: { background: { type: 'solid', color: '#080B10' }, textColor: '#94A3B8' },
+          grid: { vertLines: { color: '#10151E' }, horzLines: { color: '#10151E' } },
           crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-          rightPriceScale: { borderColor: '#1E293B' },
-          timeScale: { borderColor: '#1E293B', timeVisible: true, secondsVisible: chartTf === '1m' },
+          rightPriceScale: { borderColor: '#1E293B', scaleMargins: { top: 0.12, bottom: 0.14 } },
+          timeScale: { borderColor: '#1E293B', timeVisible: true, secondsVisible: chartTf === '1m', rightOffset: 16, barSpacing: 10 },
           width: box.clientWidth,
-          height: 320,
+          height: boxH,
         });
         const samplePx = Number(c[c.length - 1].c) * mult;
         const precision = samplePx < 0.01 ? 6 : samplePx < 1 ? 4 : samplePx < 100 ? 2 : 0;
@@ -667,16 +691,7 @@
         // v2.1 Candle Markers: exact closed candle analyzed (c[-2]) + Entry / TP / SL Exit markers
         try {
           const markers = [];
-          if (cData.length >= 2) {
-            const cRef = cData[cData.length - 2];
-            markers.push({
-              time: cRef.time,
-              position: 'aboveBar',
-              color: '#00D4FF',
-              shape: 'circle',
-              text: '🔍 Analyzed c[-2]'
-            });
-          }
+
           const findNearestTime = (isoStr) => {
             if (!isoStr || !cData.length) return null;
             const targetSec = Math.floor(new Date(isoStr).getTime() / 1000);
@@ -726,7 +741,124 @@
           markers.sort((a, b) => a.time - b.time);
           if (markers.length) candleSeries.setMarkers(markers);
         } catch {}
-        tvChart.timeScale().fitContent();
+        window.chartBarSpacing = 10;
+        window.zoomChart = (factor) => {
+          if (!tvChart) return;
+          window.chartBarSpacing = Math.max(3, Math.min(36, (window.chartBarSpacing || 10) * factor));
+          tvChart.timeScale().applyOptions({ barSpacing: window.chartBarSpacing });
+        };
+
+        // Live Overlay Sync (Glowing Live Candle Halo + Analysing Pill + Candle Close Countdown)
+        const tfSeconds = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 }[chartTf] || 60;
+        const syncLiveOverlays = () => {
+          const halo = document.getElementById('live-candle-halo');
+          const conn = document.getElementById('live-entry-connector');
+          const pill = document.getElementById('live-entry-pill');
+          const cd = document.getElementById('candle-countdown-badge');
+          if (!tvChart || !candleSeriesRef || !lastBarRef || section !== 'chart') return;
+          const x = tvChart.timeScale().timeToCoordinate(lastBarRef.time);
+          const yTop = candleSeriesRef.priceToCoordinate(Math.max(lastBarRef.open, lastBarRef.close));
+          const yBot = candleSeriesRef.priceToCoordinate(Math.min(lastBarRef.open, lastBarRef.close));
+          const yClose = candleSeriesRef.priceToCoordinate(lastBarRef.close);
+          const boxW = box.clientWidth || 360;
+
+          if (cd && yClose !== null && Number.isFinite(yClose)) {
+            const nowSec = Math.floor(Date.now() / 1000);
+            const rem = Math.max(0, tfSeconds - (nowSec % tfSeconds));
+            const hrs = Math.floor(rem / 3600);
+            const mins = Math.floor((rem % 3600) / 60);
+            const secs = rem % 60;
+            const txtCd = hrs > 0
+              ? `${String(hrs).padStart(2,'0')}:${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`
+              : `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+            cd.textContent = txtCd;
+            cd.style.top = `${Math.max(4, Math.min(boxH - 26, yClose + 9))}px`;
+            cd.style.backgroundColor = lastBarRef.close >= lastBarRef.open ? '#059669' : '#DC2626';
+            cd.classList.remove('hidden');
+          }
+
+          if (halo && x !== null && yTop !== null && yBot !== null && x > 10 && x < boxW - 70) {
+            const bw = Math.max(10, Math.min(18, window.chartBarSpacing || 10));
+            const bh = Math.max(10, Math.abs(yBot - yTop) + 6);
+            const topPx = Math.min(yTop, yBot) - 3;
+            halo.style.left = `${x - bw / 2}px`;
+            halo.style.top = `${topPx}px`;
+            halo.style.width = `${bw}px`;
+            halo.style.height = `${bh}px`;
+            halo.classList.remove('hidden');
+
+            if (pill && conn && yClose !== null) {
+              const pillX = Math.min(boxW - 185, x + bw / 2 + 24);
+              const lineW = Math.max(8, pillX - (x + bw / 2));
+              if (pillX > x + bw / 2 + 12) {
+                conn.style.left = `${x + bw / 2 + 2}px`;
+                conn.style.top = `${yClose}px`;
+                conn.style.width = `${lineW}px`;
+                conn.classList.remove('hidden');
+                pill.style.left = `${pillX}px`;
+                pill.style.top = `${Math.max(12, Math.min(boxH - 52, yClose - 20))}px`;
+                pill.classList.remove('hidden');
+              } else {
+                conn.classList.add('hidden');
+                pill.classList.add('hidden');
+              }
+            }
+          } else {
+            if (halo) halo.classList.add('hidden');
+            if (conn) conn.classList.add('hidden');
+            if (pill) pill.classList.add('hidden');
+          }
+        };
+
+        if (window._candleOverlayTimer) clearInterval(window._candleOverlayTimer);
+        window._candleOverlayTimer = setInterval(syncLiveOverlays, 500);
+        setTimeout(syncLiveOverlays, 120);
+
+        // Infinite History Scroll (loads 300 older candles seamlessly whenever dragging left!)
+        let historyLoading = false;
+        let historyExhausted = false;
+        tvChart.timeScale().subscribeVisibleLogicalRangeChange(async (logicalRange) => {
+          syncLiveOverlays();
+          if (!logicalRange || historyLoading || historyExhausted || !cData.length) return;
+          if (logicalRange.from < 15) {
+            historyLoading = true;
+            try {
+              const oldestMs = cData[0].time * 1000;
+              const older = await apiFetch(`/api/v1/crypto/chart/${encodeURIComponent(r.symbol)}?interval=${encodeURIComponent(chartTf)}&limit=300&before_ms=${oldestMs}`);
+              const rawOlder = older?.candles || [];
+              if (!rawOlder.length) {
+                historyExhausted = true;
+              } else {
+                const addC = [], addV = [];
+                for (const x of rawOlder) {
+                  const ts = Math.floor(Number(x.ts_ms) / 1000);
+                  if (seenTs.has(ts) || ts >= cData[0].time) continue;
+                  seenTs.add(ts);
+                  const o = Number(x.o) * mult, h = Number(x.h) * mult, l = Number(x.l) * mult, cl = Number(x.c) * mult, v = Number(x.v);
+                  addC.push({ time: ts, open: o, high: h, low: l, close: cl });
+                  addV.push({ time: ts, value: v, color: cl >= o ? 'rgba(0,230,118,0.28)' : 'rgba(255,59,92,0.28)' });
+                }
+                if (!addC.length) {
+                  historyExhausted = true;
+                } else {
+                  const prevRange = tvChart.timeScale().getVisibleLogicalRange();
+                  cData.unshift(...addC);
+                  vData.unshift(...addV);
+                  candleSeries.setData(cData);
+                  volSeries.setData(vData);
+                  if (prevRange) {
+                    tvChart.timeScale().setVisibleLogicalRange({
+                      from: prevRange.from + addC.length,
+                      to: prevRange.to + addC.length,
+                    });
+                  }
+                }
+              }
+            } catch {}
+            historyLoading = false;
+          }
+        });
+
         connectOkxDirectMsStream(r.symbol, chartTf);
       }
 
@@ -800,6 +932,21 @@
 
     function render() {
       renderMajors();
+      if (!window._posRunTimer) {
+        window._posRunTimer = setInterval(() => {
+          const els = document.querySelectorAll('.live-run-timer');
+          const nowMs = Date.now();
+          els.forEach(el => {
+            const oms = Number(el.getAttribute('data-opened-ms') || 0);
+            if (!oms) return;
+            const s = Math.max(0, Math.floor((nowMs - oms) / 1000));
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+            el.textContent = h > 0
+              ? `⏱ ${h}h ${String(m).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`
+              : `⏱ ${m}m ${String(sec).padStart(2,'0')}s`;
+          });
+        }, 1000);
+      }
       renderBrainSticky();
       renderNav();
       const led = overview?.ledger || {};
@@ -838,17 +985,62 @@
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             ${list.length === 0 ? `<div class="card p-5 text-center text-xs text-slate-400 md:col-span-2">No open ${horizon} positions right now. 24/7 scanner dynamically screens all 534+ OKX coins every 5 min.</div>` : list.map(p => {
               const nu = Number(p.unrealised_net_usdt || 0);
-              return `<div class="card p-4">
-                <div class="flex justify-between"><div><span class="text-base font-extrabold text-white">${p.symbol}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#00E676]/15 text-[#00E676] font-bold">${p.direction} ${p.leverage}x</span><div class="text-[11px] text-slate-400">${p.engine_code} • Margin ${fmtAmt(p.margin_usdt)}</div></div>
-                <div class="text-right mono"><div class="text-base font-extrabold ${nu>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(nu, true)}</div><div class="text-[10px] text-slate-400">≈ ${fmtAlt(nu, true)}</div></div></div>
-                <div class="mt-2 flex gap-1.5 flex-wrap"><span class="text-[10px] px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] font-semibold">⏱ ${p.hold_horizon}</span><span class="text-[10px] px-2 py-0.5 rounded ${p.tier==='ELITE_TG'?'bg-[#F5B700]/15 text-[#F5B700]':'bg-slate-800 text-slate-300'} font-bold">${p.tier==='ELITE_TG'?'⭐ ELITE TG':'🧪 BACKEND LAB'}</span><span class="text-[10px] px-2 py-0.5 rounded bg-[#A855F7]/15 text-[#D8B4FE] font-bold">${p.bias_tag||'TREND_ALIGNED'} • Risk ₹${Math.round(Number(p.planned_risk_inr||500))}</span></div>
-                <div class="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-[#1E293B] text-center text-xs mono">
-                  <div><div class="text-[10px] text-slate-500">Entry</div>${fmtPx(p.entry_fill_price)}</div>
-                  <div><div class="text-[10px] text-slate-500">LTP</div>${fmtPx(p.current_ltp)}</div>
-                  <div><div class="text-[10px] text-slate-500">SL</div><span class="text-[#FF3B5C]">${fmtPx(p.stop_loss)}</span></div>
-                  <div><div class="text-[10px] text-slate-500">Target</div><span class="text-[#00E676]">${fmtPx(p.target_price)}</span></div>
+              const isLong = String(p.direction || 'LONG').toUpperCase() === 'LONG';
+              const ePx = Number(p.entry_fill_price || 0);
+              const ltpPx = Number(p.current_ltp || ePx);
+              const slPx = Number(p.stop_loss || 0);
+              const tpPx = Number(p.target_price || 0);
+              const initRisk = Math.max(1e-9, Math.abs(ePx - Number(p.initial_stop_loss || slPx)));
+              const liveR = isLong ? ((ltpPx - ePx) / initRisk) : ((ePx - ltpPx) / initRisk);
+              const spanTotal = Math.max(1e-9, isLong ? (tpPx - slPx) : (slPx - tpPx));
+              const progPct = Math.max(2, Math.min(98, ((isLong ? (ltpPx - slPx) : (slPx - ltpPx)) / spanTotal) * 100));
+              const entryPct = Math.max(10, Math.min(85, ((isLong ? (ePx - slPx) : (slPx - ePx)) / spanTotal) * 100));
+              const openedDt = p.opened_at_ist ? new Date(p.opened_at_ist) : null;
+              const openedMs = (openedDt && !Number.isNaN(openedDt.getTime())) ? openedDt.getTime() : Date.now();
+              const entryTimeStr = openedDt && !Number.isNaN(openedDt.getTime())
+                ? openedDt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
+                : '--:--';
+              const elapsedSec = Math.max(0, Math.floor((Date.now() - openedMs) / 1000));
+              const eHrs = Math.floor(elapsedSec / 3600), eMins = Math.floor((elapsedSec % 3600) / 60), eSecs = elapsedSec % 60;
+              const durStr = eHrs > 0 ? `${eHrs}h ${String(eMins).padStart(2,'0')}m ${String(eSecs).padStart(2,'0')}s` : `${eMins}m ${String(eSecs).padStart(2,'0')}s`;
+              return `<div class="card p-4 relative overflow-hidden" style="border-color:${nu>=0?'rgba(0,230,118,0.22)':'rgba(255,59,92,0.22)'}">
+                <div class="flex justify-between items-start gap-2">
+                  <div>
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      <span class="text-base font-extrabold text-white tracking-tight">${p.symbol}</span>
+                      <span class="text-[10px] px-1.5 py-0.5 rounded font-extrabold ${isLong?'bg-[#00E676]/15 text-[#00E676]':'bg-[#FF3B5C]/15 text-[#FF3B5C]'}">${p.direction} ${p.leverage}x</span>
+                      ${p.trailing_active ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#00D4FF]/15 text-[#00D4FF] font-extrabold">TRAIL</span>` : (p.breakeven_shifted ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#00D4FF]/15 text-[#00D4FF] font-extrabold">🛡️ BE</span>` : '')}
+                    </div>
+                    <div class="text-[11px] text-slate-400 mt-0.5">${p.engine_code} • Margin ${fmtAmt(p.margin_usdt)}</div>
+                  </div>
+                  <div class="text-right mono">
+                    <div class="text-base font-extrabold ${nu>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtAmt(nu, true)}</div>
+                    <div class="text-[10px] text-slate-400">≈ ${fmtAlt(nu, true)} • <span class="${liveR>=0?'text-[#00E676]':'text-[#FF3B5C]'} font-bold">${liveR>=0?'+':''}${liveR.toFixed(2)}R</span></div>
+                  </div>
                 </div>
-                <div class="mt-3 flex gap-2"><button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] text-xs font-bold text-white">🕯️ Live Chart</button><button onclick="closePos('${p.position_id}')" class="px-3 py-1.5 rounded-xl bg-[#FF3B5C]/15 text-[#FF3B5C] text-xs font-bold">Exit</button></div>
+                <div class="mt-2.5 flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-[#0A0F1A] border border-[#1B2436] text-[10px] mono">
+                  <span class="text-slate-300">🕒 Entry <b class="text-white">${entryTimeStr}</b></span>
+                  <span class="live-run-timer font-extrabold text-[#00D4FF]" data-opened-ms="${openedMs}">⏱ ${durStr}</span>
+                </div>
+                <div class="mt-2 flex gap-1.5 flex-wrap">
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-[#141B2D] text-[#00D4FF] font-semibold">${p.hold_horizon}</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded ${p.tier==='ELITE_TG'?'bg-[#F5B700]/15 text-[#F5B700]':'bg-slate-800 text-slate-300'} font-bold">${p.tier==='ELITE_TG'?'⭐ ELITE TG':'🧪 BACKEND LAB'}</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-[#A855F7]/15 text-[#D8B4FE] font-bold">${p.bias_tag||'TREND_ALIGNED'} • Risk ₹${Math.round(Number(p.planned_risk_inr||500))}</span>
+                </div>
+                <div class="mt-3">
+                  <div class="relative h-1.5 w-full rounded-full bg-[#151E30] overflow-visible">
+                    <div class="absolute top-0 bottom-0 w-0.5 bg-slate-400/70" style="left:${entryPct}%"></div>
+                    <div class="h-full rounded-full transition-all duration-300 ${nu>=0?'bg-gradient-to-r from-[#00D4FF] to-[#00E676]':'bg-[#FF3B5C]'}" style="width:${progPct}%"></div>
+                    <div class="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full border-2 border-[#080B10] shadow ${nu>=0?'bg-[#00E676]':'bg-[#FF3B5C]'}" style="left:calc(${progPct}% - 5px)"></div>
+                  </div>
+                </div>
+                <div class="grid grid-cols-4 gap-2 mt-2.5 pt-2.5 border-t border-[#1E293B] text-center text-xs mono">
+                  <div><div class="text-[10px] text-slate-500">Entry</div><span class="text-slate-200">${fmtPx(p.entry_fill_price)}</span></div>
+                  <div><div class="text-[10px] text-slate-500">Live LTP</div><span class="font-extrabold ${nu>=0?'text-[#00E676]':'text-[#FF3B5C]'}">${fmtPx(p.current_ltp)}</span></div>
+                  <div><div class="text-[10px] text-slate-500">SL</div><span class="${p.breakeven_shifted?'text-[#00D4FF]':'text-[#FF3B5C]'} font-bold">${fmtPx(p.stop_loss)}</span></div>
+                  <div><div class="text-[10px] text-slate-500">Target</div><span class="text-[#00E676] font-bold">${fmtPx(p.target_price)}</span></div>
+                </div>
+                <div class="mt-3 flex gap-2"><button onclick="openChart('${p.symbol}')" class="flex-1 py-1.5 rounded-xl bg-[#141B2D] border border-[#2A3950] hover:border-[#00D4FF]/60 text-xs font-bold text-white">🕯️ Live Chart</button><button onclick="closePos('${p.position_id}')" class="px-3.5 py-1.5 rounded-xl bg-[#FF3B5C]/15 hover:bg-[#FF3B5C]/25 text-[#FF3B5C] text-xs font-bold">Exit</button></div>
               </div>`;
             }).join('')}
           </div>`;
