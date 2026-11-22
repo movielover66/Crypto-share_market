@@ -577,4 +577,3 @@ class GeminiTrapJudge:
             except Exception:
                 continue
         return {"verdict": "APPROVE", "confidence": 82, "reason": "12-Point Guard Passed (Vision fallback)", "source": "VISION_FALLBACK"}
-
