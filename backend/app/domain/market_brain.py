@@ -489,19 +489,6 @@ class MarketBrainEngine:
                 "cause": cause, "at_ist": now_ist.strftime("%d %b %I:%M %p IST"),
             })
             self.history = self.history[:20]
-            if tg and getattr(tg, "enabled", False):
-                mode_icons = {
-                    "STRONG_UPTREND": "🟢📈", "HEALTHY_CORRECTION": "🟡📉",
-                    "SIDEWAYS_RANGE": "⚪↔️", "DOWNTREND": "🟠🔻", "SEVERE_CRASH": "🔴🚨",
-                }
-                ic = mode_icons.get(confirmed_mode, "🔷🧠")
-                msg = (
-                    f"🔷🧠 <b>MARKET BRAIN SHIFT: {prev_mode} ➜ {ic} {confirmed_mode}</b>\n"
-                    f"Score: <b>{raw_score:+d}/100</b> | Bias: <b>{bias}</b> | Breadth: <b>{green_pct:.0f}% Green</b>\n"
-                    f"<i>Hurst {hurst} ({hurst_label}) • Spot: {spot_dir} • {cause}</i>"
-                )
-                if hasattr(tg, "send_html"):
-                    tg.send_html(msg, btn_label="🧠 Open Market Brain")
-                else:
-                    tg.send_alert(f"MARKET BRAIN SHIFT: {confirmed_mode}", cause, now_ist.strftime("%I:%M %p IST"))
+            # Brain mode shifts are recorded in UI history only — zero Telegram spam!
+            # Current Brain state is attached directly inside Trade Entry messages.
         return directive
