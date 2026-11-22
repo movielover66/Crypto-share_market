@@ -423,6 +423,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 now_ist=now_ist,
                 cfg=strat_cfg,
                 fallback_max_open=eng.config.max_open_positions,
+                funding_rate=(float(tickers[sig.symbol].funding_rate) if sig.symbol in tickers else None),
             )
             if not fw_ok:
                 continue
