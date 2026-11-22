@@ -218,7 +218,7 @@ def evaluate_engine_1_breakout(
 
     entry = _quant(last.close)
     # Crypto-grade stop-loss floor (1.6% min / 1.85x ATR) so normal 15m noise wicks don't hunt SL
-    risk = max(atr * Decimal("1.85"), entry * Decimal("0.016"))
+    risk = max(atr * Decimal("1.85"), entry * Decimal("0.020"))
     sl = _quant(entry - risk if direction == "LONG" else entry + risk)
     target = _quant(entry + risk * Decimal("2.4") if direction == "LONG" else entry - risk * Decimal("2.4"))
     net_rr = Decimal("2.25")
@@ -378,7 +378,7 @@ def evaluate_boom_radar(
     stage = "BOOM TRIGGERED" if (score >= 82 and dpct > -5.0) else ("EARLY EXPANSION" if score >= 68 else "WATCHING BASE")
     entry = _quant(ltp)
     sl = _quant(entry * Decimal("0.96"))
-    target = _quant(entry * Decimal("1.12"))
+    target = _quant(entry * Decimal("1.08"))
     return {
         "symbol": symbol,
         "ltp": str(entry),
@@ -462,7 +462,7 @@ def evaluate_engine_4_shadow_sweep(
         failed.append("No Active Liquidity Sweep Wick")
 
     entry = _quant(last.close)
-    risk = max(atr * Decimal("1.8"), entry * Decimal("0.016"))
+    risk = max(atr * Decimal("1.8"), entry * Decimal("0.020"))
     sl = _quant(min(last.low, entry - risk) if direction == "LONG" else max(last.high, entry + risk))
     target = _quant(entry + risk * Decimal("2.5") if direction == "LONG" else entry - risk * Decimal("2.5"))
     status = "CONFIRMED" if (score >= 86 and len(failed) == 0) else ("WATCHLIST" if score >= 70 else "REJECTED")
