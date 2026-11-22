@@ -197,8 +197,34 @@ class MarketBrainEngine:
         self.pending_count: int = 0
         self.history: List[Dict[str, Any]] = []
         self._fg_cache: Tuple[int, str, float] = (50, "Neutral", 0.0)
+        self._global_cache: Tuple[float, float, float] = (0.0, 56.0, 0.0)  # (mcap_chg_24h, btc_dom, ts)
+        self.ema_score: Optional[float] = None
         self.last_deep_ts: float = 0.0
         self.last_pulse_ts: float = 0.0
+
+    def fetch_global_market(self) -> Tuple[float, float]:
+        """Fetches free CoinGecko /global Total Market Cap 24h % and BTC Dominance (5-min cache)."""
+        now = time.time()
+        mchg, dom, ts = self._global_cache
+        if (now - ts) < 300 and ts > 0:
+            return mchg, dom
+        if self.demo_mode:
+            self._global_cache = (1.2, 56.5, now)
+            return 1.2, 56.5
+        try:
+            req = urllib.request.Request(
+                "https://api.coingecko.com/api/v3/global",
+                headers={"User-Agent": "TRADEIQ-Brain/2.2", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                data = (json.loads(resp.read().decode("utf-8")) or {}).get("data") or {}
+            m = round(float(data.get("market_cap_change_percentage_24h_usd") or 0.0), 2)
+            d = round(float((data.get("market_cap_percentage") or {}).get("btc") or 56.0), 1)
+            self._global_cache = (m, d, now)
+            return m, d
+        except Exception:
+            self._global_cache = (mchg, dom, now)
+            return mchg, dom
 
     def fetch_fear_greed(self) -> Tuple[int, str]:
         now = time.time()
@@ -363,10 +389,14 @@ class MarketBrainEngine:
         if len(eth_c1h) >= 20:
             eth_ema = _ema(eth_c1h, 20) or eth_c1h[-1]
             f1 += 5 if eth_c1h[-1] > eth_ema else -5
-        if btc_chg >= 2.5:
-            f1 += 3
-        elif btc_chg <= -2.5:
-            f1 -= 3
+        # Live 4-hour BTC ROC removes 24h lagging bias when market reverses
+        btc_roc_4h = 0.0
+        if len(closes_1h) >= 5 and float(closes_1h[-5]) > 0:
+            btc_roc_4h = ((float(closes_1h[-1]) - float(closes_1h[-5])) / float(closes_1h[-5])) * 100.0
+        if btc_roc_4h >= 1.2:
+            f1 += 4
+        elif btc_roc_4h <= -1.2:
+            f1 -= 4
         # Amplify directional trend when Hurst confirms persistence (H > 0.52)
         if hurst < 0.48:
             f1 = int(f1 * 0.7)
@@ -378,8 +408,10 @@ class MarketBrainEngine:
         green_cnt = sum(1 for t in usdt_all if t.change_24h_pct >= 0)
         green_pct = round((green_cnt / total_coins) * 100.0, 1)
         red_pct = 100.0 - green_pct
-        # Map 0% green -> -25, 50% green -> 0, 100% green -> +25
-        f2 = int(round((green_pct - 50.0) * 0.50))
+        mcap_chg, btc_dom = self.fetch_global_market()
+        # Map 0% green -> -22, 50% green -> 0, 100% green -> +22, plus +/-3 pts from Global MCap flow
+        mcap_pts = max(-3, min(3, int(round(mcap_chg))))
+        f2 = int(round((green_pct - 50.0) * 0.44)) + mcap_pts
         f2 = max(-25, min(25, f2))
 
         # ── Layer 3: OKX Live Order-Flow (Footprint CVD + L2 Depth) (±20 pts) ─────
@@ -439,11 +471,20 @@ class MarketBrainEngine:
         if red_pct >= 62.0 and btc_chg <= 0.0 and raw_score > 10:
             raw_score = 10
 
-        emergency_crash = (btc_chg <= -5.0 and red_pct >= 72.0) or (btc_chg <= -6.5)
+        emergency_crash = (btc_chg <= -5.0 and red_pct >= 72.0) or (btc_chg <= -6.5) or (btc_roc_4h <= -3.5 and red_pct >= 70.0)
         if emergency_crash and raw_score > -48:
             raw_score = -55
 
-        confirmed_mode = self._apply_hysteresis(raw_score, emergency_crash)
+        # EMA Score Smoothing (0.40 * raw + 0.60 * prev_ema) prevents 1-minute CVD flickers;
+        # bypassed immediately on true emergency crashes for zero lag!
+        if emergency_crash or self.ema_score is None:
+            smoothed_score = int(raw_score)
+            self.ema_score = float(raw_score)
+        else:
+            self.ema_score = (0.40 * float(raw_score)) + (0.60 * self.ema_score)
+            smoothed_score = int(round(self.ema_score))
+
+        confirmed_mode = self._apply_hysteresis(smoothed_score, emergency_crash)
         bias, allow_l, allow_s, allow_b, spot_dir = _mode_permissions(confirmed_mode)
 
         # Build human-readable primary market cause
@@ -461,7 +502,7 @@ class MarketBrainEngine:
         conf = min(98, max(52, int(55 + abs(raw_score) * 0.43)))
         factors = [
             {"name": "BTC/ETH Trend + Hurst", "pts": f1, "max": 25, "detail": f"BTC {btc_chg:+.2f}% • Hurst {hurst} ({hurst_label})"},
-            {"name": "534-Coin Market Breadth", "pts": f2, "max": 25, "detail": f"{green_pct:.0f}% Green / {red_pct:.0f}% Red ({len(usdt_all)} coins)"},
+            {"name": "534-Coin Breadth + Global MCap", "pts": f2, "max": 25, "detail": f"{green_pct:.0f}% Green • MCap {mcap_chg:+.1f}% • BTC.D {btc_dom}%"},
             {"name": "OKX Footprint CVD + L2", "pts": f3, "max": 20, "detail": f"CVD {avg_cvd:+.1f}% • L2 {buy_pct:.0f}% Buy"},
             {"name": "Macro News Sentiment", "pts": f4, "max": 15, "detail": f"{bull_n} Bull / {bear_n} Risk Headlines"},
             {"name": "Vol Burst + Funding", "pts": f5, "max": 10, "detail": f"Vol {vol_burst}x • Funding {fr_pct:+.3f}%"},
@@ -471,7 +512,7 @@ class MarketBrainEngine:
         directive = MarketDirective(
             mode=confirmed_mode,
             bias=bias,
-            score=raw_score,
+            score=smoothed_score,
             raw_score=raw_score,
             confidence_pct=conf,
             hurst=hurst,
@@ -499,7 +540,7 @@ class MarketBrainEngine:
         # Record & send Sapphire Cyan Telegram Mode-Shift Alert when confirmed regime changes!
         if prev_mode and prev_mode != confirmed_mode:
             self.history.insert(0, {
-                "from": prev_mode, "to": confirmed_mode, "score": raw_score,
+                "from": prev_mode, "to": confirmed_mode, "score": smoothed_score,
                 "cause": cause, "at_ist": now_ist.strftime("%d %b %I:%M %p IST"),
             })
             self.history = self.history[:20]
