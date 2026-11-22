@@ -23,7 +23,7 @@ NON_CRYPTO_BLACKLIST: Set[str] = {
     "GMEUSDT", "AMCUSDT", "RIVNUSDT", "LCIDUSDT", "NIOUSDT", "DISUSDT",
     "BAUSDT", "JPMUSDT", "GSUSDT", "VUSDT", "MAUSDT", "XOMUSDT", "CVXUSDT",
     # Commodity / FX / Index Proxies & Stablecoins
-    "GLDUSDT", "SLVUSDT", "XAUTUSDT", "PAXGUSDT", "USDCUSDT", "FDUSDUSDT",
+    "GLDUSDT", "SLVUSDT", "XAUTUSDT", "PAXGUSDT", "XAUUSDT", "XAGUSDT", "USDCUSDT", "FDUSDUSDT",
     "TUSDUSDT", "USDEUSDT", "DAIUSDT", "EURTUSDT", "PYUSDUSDT", "USDPUSDT",
     # Known ultra-noisy micro-junk tickers from live audit
     "USELESSUSDT", "SKDDUSDT", "BTWUSDT", "PROSUSDT",
