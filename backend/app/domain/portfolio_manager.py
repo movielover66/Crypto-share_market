@@ -136,7 +136,8 @@ def check_risk_firewall(
     risk_blocked_syms: set,
     now_ist: datetime.datetime,
     cfg: StrategyConfig,
-    fallback_max_open: int,
+    fallback_max_open: int = 5,
+    funding_rate: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """
     Layer 5 Risk Firewall:
@@ -151,6 +152,13 @@ def check_risk_firewall(
 
     if sym in risk_blocked_syms and engine_code != "ENGINE_5_CRASH_SHORT":
         return False, f"Macro High-Risk News Shield active on {sym}"
+
+    # Funding Rate Crowding Guard (prevents Long/Short Squeeze traps)
+    if funding_rate is not None:
+        if direction == "LONG" and funding_rate >= 0.0005:
+            return False, f"Funding Crowding Guard: +{funding_rate*100:.3f}%/8h overheated LONG squeeze risk"
+        if direction == "SHORT" and funding_rate <= -0.0005 and engine_code != "ENGINE_5_CRASH_SHORT":
+            return False, f"Funding Crowding Guard: {funding_rate*100:.3f}%/8h extreme SHORT squeeze risk"
 
     # 6-hour per-coin SL cooldown
     if cfg.sl_cooldown_hours > 0:
@@ -168,7 +176,8 @@ def check_risk_firewall(
     eff_max_open = 0 if (cfg.unlimited_paper_mode and cfg.max_open_positions == 0) else (
         cfg.max_open_positions if cfg.max_open_positions > 0 else (0 if cfg.unlimited_paper_mode else fallback_max_open)
     )
-    eff_max_dir = 0 if cfg.unlimited_paper_mode and cfg.max_per_direction == 0 else cfg.max_per_direction
+    corr_cap = getattr(cfg, "max_same_direction_cap", 4)
+    eff_max_dir = cfg.max_per_direction if cfg.max_per_direction > 0 else corr_cap
     eff_max_boom = 0 if cfg.unlimited_paper_mode and cfg.max_boom_open == 0 else cfg.max_boom_open
     eff_max_daily = 0 if cfg.unlimited_paper_mode and cfg.max_daily_trades == 0 else cfg.max_daily_trades
 
