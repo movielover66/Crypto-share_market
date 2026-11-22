@@ -306,7 +306,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
         if c15:
             s1 = evaluate_engine_1_breakout(sym, c15, depth, c1h=c1h, footprint=fp, change_24h_pct=eff_chg)
             signals.append(evaluate_engine_4_shadow_sweep(sym, c15, footprint=fp, crowd=crowd))
-            if c1h and (btc_chg <= Decimal("-4.0") or bear_macro_headline or (brain_dir and brain_dir.mode in ("DOWNTREND", "SEVERE_CRASH"))):
+            if c1h and (btc_chg <= Decimal("-3.0") or (brain_dir and brain_dir.mode in ("DOWNTREND", "SEVERE_CRASH") and brain_dir.btc_chg_24h <= 0.0)):
                 signals.append(evaluate_engine_5_crash_short(
                     sym, c15, c1h, depth, footprint=fp,
                     change_24h_pct=sym_chg, btc_chg_24h=btc_chg, macro_reason=bear_macro_headline,
