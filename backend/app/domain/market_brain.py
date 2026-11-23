@@ -165,15 +165,16 @@ class MarketDirective:
 
 
 def _mode_permissions(mode: str) -> Tuple[str, bool, bool, bool, str]:
-    """Returns (bias, allow_longs, allow_shorts, allow_boom_long, spot_directive)."""
+    """Crash-Only Shield: allows BOTH LONG & SHORT in normal regimes (coin's 4H 200-EMA decides direction),
+    and locks LONGs + Boom Radar ONLY in confirmed DOWNTREND / SEVERE_CRASH!"""
     if mode == "STRONG_UPTREND":
-        return ("LONG_ONLY", True, False, True, "WAIT_TOP")
+        return ("BOTH_BULL_TREND", True, True, True, "SWING_HOLD")
     if mode == "HEALTHY_CORRECTION":
-        return ("DIP_LONG", True, False, True, "PRIME_BUY")
+        return ("BOTH_HEALTHY_DIP", True, True, True, "PRIME_BUY")
     if mode == "SIDEWAYS_RANGE":
         return ("BOTH_RANGE", True, True, True, "QUICK_BOUNCE")
     if mode == "DOWNTREND":
-        return ("SHORT_ONLY", False, True, False, "WAIT_BOTTOM")
+        return ("CRASH_SHIELD_SHORT", False, True, False, "CASH_SHIELD")
     return ("CRASH_SHORT_ONLY", False, True, False, "DEEP_DCA_ONLY")
 
 
@@ -419,8 +420,8 @@ class MarketBrainEngine:
         eth_cvd = float((eth_fp or {}).get("delta_pct", 0.0))
         avg_cvd = (btc_cvd * 0.65) + (eth_cvd * 0.35)
         buy_pct = float((btc_depth or {}).get("buy_pct", 50.0))
-        f3 = int(round((avg_cvd / 40.0) * 14.0 + ((buy_pct - 50.0) / 25.0) * 6.0))
-        f3 = max(-20, min(20, f3))
+        f3 = int(round((avg_cvd / 40.0) * 7.0 + ((buy_pct - 50.0) / 25.0) * 3.0))
+        f3 = max(-10, min(10, f3))
 
         # ── Layer 4: Live MACRO-ONLY News Sentiment (±15 pts) ────────────────────
         # Single-coin hacks (e.g. Chainflip) only block that coin — ONLY systemic macro/BTC/ETF
