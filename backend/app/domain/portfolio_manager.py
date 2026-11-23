@@ -181,6 +181,12 @@ def check_risk_firewall(
     eff_max_boom = 0 if cfg.unlimited_paper_mode and cfg.max_boom_open == 0 else cfg.max_boom_open
     eff_max_daily = 0 if cfg.unlimited_paper_mode and cfg.max_daily_trades == 0 else cfg.max_daily_trades
 
+    # v2.2 Unified Same-Direction Cap across ALL open positions (including BOOM_RADAR)
+    if eff_max_dir > 0:
+        dir_open = sum(1 for p in open_positions if p.direction == direction)
+        if dir_open >= eff_max_dir:
+            return False, f"Max {direction} positions reached ({eff_max_dir} across all engines)"
+
     if is_boom:
         if eff_max_boom > 0:
             boom_open = sum(1 for p in open_positions if p.horizon_bucket == "boom" or p.engine_code == "BOOM_RADAR")
@@ -189,10 +195,6 @@ def check_risk_firewall(
     else:
         if eff_max_open > 0 and len(open_positions) >= eff_max_open:
             return False, f"Max open positions reached ({eff_max_open})"
-        if eff_max_dir > 0:
-            dir_open = sum(1 for p in open_positions if p.direction == direction and p.horizon_bucket != "boom")
-            if dir_open >= eff_max_dir:
-                return False, f"Max {direction} positions reached ({eff_max_dir})"
 
     if eff_max_daily > 0:
         today_str = now_ist.strftime("%Y-%m-%d")
@@ -228,7 +230,9 @@ def build_engine_scorecard(
         return buckets[code]
 
     label_map = {
-        "ENGINE_1_BREAKOUT": "E1 Breakout Momentum",
+        "C05_ADX_BB_MEAN_REV": "🏆 C05 4H ADX-BB Mean-Rev (64% WR)",
+        "C05_SUPERTREND_TRAIL": "🏆 C05 4H Supertrend-3 Trail (PF 1.81)",
+        "ENGINE_1_BREAKOUT": "E1 Breakout (Legacy)",
         "ENGINE_2_DONCHIAN": "E2 Donchian Swing",
         "ENGINE_3_FUNDING_RSI2": "E3 Funding Mean-Rev",
         "ENGINE_4_SHADOW_SWEEP": "E4 Shadow Sweep",
