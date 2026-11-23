@@ -40,6 +40,10 @@ NON_CRYPTO_BLACKLIST: Set[str] = {
     "BACUSDT", "WFCUSDT", "CUSDT", "BLKUSDT", "SCHWUSDT", "SPXUSDT",
     "NDXUSDT", "DJIUSDT", "VIXUSDT", "DIAUSDT", "TLTUSDT", "USOUSDT",
     "UNGUSDT", "WTIUSDT", "BRENTUSDT", "COPPERUSDT", "NATGASUSDT",
+    # Pre-IPO / Private Equity / AI Company Tokenized Stock Swaps on OKX
+    "ANTHROPICUSDT", "OPENAIUSDT", "SPACEXUSDT", "STRIPEUSDT", "XAIUSDT",
+    "DATABRICKSUSDT", "PERPLEXITYUSDT", "ANDURILUSDT", "BYTEDANCEUSDT",
+    "FIGMAUSDT", "CANVAUSDT", "KLARNAUSDT", "DISCORDUSDT", "EPICUSDT",
     # Known ultra-noisy micro-junk tickers from live audit
     "USELESSUSDT", "SKDDUSDT", "BTWUSDT", "PROSUSDT",
 }
@@ -55,6 +59,14 @@ VERIFIED_CRYPTO_BASE: Set[str] = {
     "TRX", "ZEC", "XMR", "CRV", "SNX", "COMP", "SUSHI", "SAND", "MANA", "AXS",
     "GALA", "CHZ", "APE", "BLUR", "DYDX", "GMX", "ENS", "KAS", "FTM", "S",
     "BERA", "IP", "KAITO", "TRUMP", "PNUT", "POPCAT", "NEIRO", "NOT", "DOGS",
+    "HYPE", "OKB", "CRO", "KCS", "BGB", "GT", "PENGU", "RAY", "AERO", "OM",
+    "ORDI", "SATS", "ZRO", "W", "MANTA", "DYM", "ALT", "JTO", "BOME", "MEW",
+    "GOAT", "MOODENG", "FARTCOIN", "AIXBT", "MORPHO", "MOVE", "ME", "PI",
+    "AR", "THETA", "FLOW", "EGLD", "XTZ", "EOS", "NEO", "KAVA", "MINA", "CFX",
+    "CAKE", "1INCH", "YFI", "LRC", "BAT", "ZRX", "ENJ", "CHZ", "ZIL", "QTUM",
+    "IOTA", "DASH", "ZEN", "DCR", "RVN", "ANKR", "CELO", "ONE", "HOT", "ROSE",
+    "KSM", "GLMR", "ASTR", "CKB", "SC", "STORJ", "AUDIO", "MASK", "API3", "SSV",
+    "RPL", "FXS", "CVX", "BAL", "PERP", "MAGIC", "RDNT", "GNS", "JOE", "PENDLE",
 }
 
 
@@ -85,32 +97,33 @@ class CoinFundamentalVerifier:
         if self.demo_mode or (now - self._last_sync) < 21600 and self._cg_map:
             return
         try:
-            url = (
-                "https://api.coingecko.com/api/v3/coins/markets"
-                "?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false"
-            )
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "TRADEIQ-Crypto-v2.1", "Accept": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                rows = json.loads(resp.read().decode("utf-8"))
-            if isinstance(rows, list) and rows:
-                new_map: Dict[str, Dict[str, Any]] = {}
-                for r in rows:
-                    sym = str(r.get("symbol") or "").upper().strip()
-                    if not sym or sym in new_map:
-                        continue
-                    new_map[sym] = {
-                        "id": str(r.get("id") or ""),
-                        "name": str(r.get("name") or sym),
-                        "market_cap": float(r.get("market_cap") or 0.0),
-                        "total_volume": float(r.get("total_volume") or 0.0),
-                        "rank": int(r.get("market_cap_rank") or 9999),
-                    }
-                if new_map:
-                    self._cg_map = new_map
-                    self._last_sync = now
+            new_map: Dict[str, Dict[str, Any]] = {}
+            for page in (1, 2):
+                url = (
+                    "https://api.coingecko.com/api/v3/coins/markets"
+                    f"?vs_currency=usd&order=market_cap_desc&per_page=250&page={page}&sparkline=false"
+                )
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "TRADEIQ-Crypto-v2.3", "Accept": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    rows = json.loads(resp.read().decode("utf-8"))
+                if isinstance(rows, list):
+                    for r in rows:
+                        sym = str(r.get("symbol") or "").upper().strip()
+                        if not sym or sym in new_map:
+                            continue
+                        new_map[sym] = {
+                            "id": str(r.get("id") or ""),
+                            "name": str(r.get("name") or sym),
+                            "market_cap": float(r.get("market_cap") or 0.0),
+                            "total_volume": float(r.get("total_volume") or 0.0),
+                            "rank": int(r.get("market_cap_rank") or 9999),
+                        }
+            if new_map:
+                self._cg_map = new_map
+                self._last_sync = now
         except Exception:
             self._last_sync = now  # Soft backoff on rate-limit
 
@@ -172,24 +185,17 @@ class CoinFundamentalVerifier:
                 source="VERIFIED_REGISTRY",
             )
 
-        # 5. Allow genuinely liquid new crypto launches ONLY if 24h volume >= $40M (strong institutional listing)
-        if volume_24h_usdt >= Decimal("40000000") and len(base) >= 3 and base.isalpha():
-            return CoinVerification(
-                symbol=sym,
-                verified=True,
-                category="HIGH_LIQ_NEW_CRYPTO",
-                market_cap_usd=0.0,
-                reason=f"High-liquidity crypto listing (${volume_24h_usdt/Decimal('1000000'):.1f}M 24h vol)",
-                source="HIGH_LIQ_LISTING",
-            )
-
+        # PERMANENT STRICT WHITELIST GUARD:
+        # Zero blind high-volume bypasses! Any ticker NOT verified in CoinGecko Top-500 crypto
+        # OR VERIFIED_CRYPTO_BASE (including ALL future US/Asian/Pre-IPO tokenized stocks & commodities)
+        # is permanently rejected automatically without needing manual blacklist updates.
         return CoinVerification(
             symbol=sym,
             verified=False,
-            category="UNVERIFIED_TOKEN",
+            category="UNVERIFIED_NON_CRYPTO",
             market_cap_usd=0.0,
-            reason=f"Blocked by Gate 1: {sym} not verified on CoinGecko Top-250 or verified crypto registry.",
-            source="ENTITY_GUARD",
+            reason=f"Blocked by Strict Whitelist: {sym} is not a CoinGecko Top-500 or verified pure-crypto asset.",
+            source="STRICT_WHITELIST_GUARD",
         )
 
     def select_verified_candidates(
