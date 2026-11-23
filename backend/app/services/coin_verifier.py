@@ -25,6 +25,21 @@ NON_CRYPTO_BLACKLIST: Set[str] = {
     # Commodity / FX / Index Proxies & Stablecoins
     "GLDUSDT", "SLVUSDT", "XAUTUSDT", "PAXGUSDT", "XAUUSDT", "XAGUSDT", "USDCUSDT", "FDUSDUSDT",
     "TUSDUSDT", "USDEUSDT", "DAIUSDT", "EURTUSDT", "PYUSDUSDT", "USDPUSDT",
+    # Korean / Asian / Global Tokenized Stocks, Indices & Commodities on OKX Swaps
+    "SKHYNIXUSDT", "HYNIXUSDT", "SAMSUNGUSDT", "TSMCUSDT", "TSMUSDT", "ASMLUSDT",
+    "SONYUSDT", "TMUSDT", "HYUNDAIUSDT", "KIAUSDT", "POSCOUSDT", "NAVERUSDT",
+    "KAKAOUSDT", "TENCENTUSDT", "JDUSDT", "PDDUSDT", "BIDUUSDT", "BYDUSDT",
+    "XIAOMIUSDT", "QCOMUSDT", "TXNUSDT", "LRCXUSDT", "AMATUSDT", "KLACUSDT",
+    "MRVLUSDT", "DELLUSDT", "HPEUSDT", "IBMUSDT", "CSCOUSDT", "ADBEUSDT",
+    "CRMUSDT", "NOWUSDT", "PANWUSDT", "NETUSDT", "DDOGUSDT", "MDBUSDT",
+    "SPOTUSDT", "ABNBUSDT", "DASHUSDT", "RBLXUSDT", "SOFIUSDT", "AFRMUSDT",
+    "UPSTUSDT", "DKNGUSDT", "ROKUUSDT", "ZMUSDT", "DOCUUSDT", "PINSUSDT",
+    "SNAPUSDT", "KOUSDT", "PEPUSDT", "WMTUSDT", "COSTUSDT", "TGTUSDT",
+    "HDUSDT", "LOWUSDT", "MCDUSDT", "SBUXUSDT", "NKEUSDT", "LLYUSDT",
+    "UNHUSDT", "JNJUSDT", "PFEUSDT", "MRNAUSDT", "BRKUSDT", "MSUSDT",
+    "BACUSDT", "WFCUSDT", "CUSDT", "BLKUSDT", "SCHWUSDT", "SPXUSDT",
+    "NDXUSDT", "DJIUSDT", "VIXUSDT", "DIAUSDT", "TLTUSDT", "USOUSDT",
+    "UNGUSDT", "WTIUSDT", "BRENTUSDT", "COPPERUSDT", "NATGASUSDT",
     # Known ultra-noisy micro-junk tickers from live audit
     "USELESSUSDT", "SKDDUSDT", "BTWUSDT", "PROSUSDT",
 }
@@ -180,7 +195,7 @@ class CoinFundamentalVerifier:
     def select_verified_candidates(
         self,
         tickers: Dict[str, Any],
-        max_candidates: int = 18,
+        max_candidates: int = 30,
     ) -> Tuple[List[str], List[Dict[str, str]]]:
         """
         Stage 1 Fast Screener Funnel (534+ OKX coins -> Top 15-20 verified pure-crypto coins).
@@ -198,11 +213,11 @@ class CoinFundamentalVerifier:
                 if len(rejected) < 20:
                     rejected.append({"symbol": t.symbol, "reason": v.reason})
 
-        by_vol = sorted(verified_tickers, key=lambda x: x.volume_24h_usdt, reverse=True)[:12]
+        by_vol = sorted(verified_tickers, key=lambda x: x.volume_24h_usdt, reverse=True)[:18]
         by_mom = sorted(
             [x for x in verified_tickers if Decimal("2.0") <= abs(x.change_24h_pct) <= Decimal("22.0")],
             key=lambda x: abs(x.change_24h_pct),
             reverse=True,
-        )[:8]
+        )[:12]
         selected = list(dict.fromkeys([t.symbol for t in by_vol] + [t.symbol for t in by_mom]))[:max_candidates]
         return selected, rejected
