@@ -160,17 +160,18 @@ def check_risk_firewall(
         if direction == "SHORT" and funding_rate <= -0.0005 and engine_code != "ENGINE_5_CRASH_SHORT":
             return False, f"Funding Crowding Guard: {funding_rate*100:.3f}%/8h extreme SHORT squeeze risk"
 
-    # 6-hour per-coin SL cooldown
-    if cfg.sl_cooldown_hours > 0:
-        cooldown_sec = cfg.sl_cooldown_hours * 3600
-        for cp in all_positions:
-            if cp.status == "CLOSED" and cp.symbol.upper() == sym and cp.outcome == "LOSS" and cp.closed_at_ist:
-                try:
-                    c_dt = datetime.datetime.fromisoformat(cp.closed_at_ist)
-                    if (now_ist - c_dt).total_seconds() < cooldown_sec:
-                        return False, f"{cfg.sl_cooldown_hours}h SL cooldown active on {sym}"
-                except Exception:
-                    pass
+    # 6-hour per-coin SL cooldown + 4-hour Win re-entry cooldown (prevents re-entering the same 4H candle after Target Hit)
+    for cp in all_positions:
+        if cp.status == "CLOSED" and cp.symbol.upper() == sym and cp.closed_at_ist:
+            try:
+                c_dt = datetime.datetime.fromisoformat(cp.closed_at_ist)
+                elapsed_sec = (now_ist - c_dt).total_seconds()
+                if cp.outcome == "LOSS" and cfg.sl_cooldown_hours > 0 and elapsed_sec < cfg.sl_cooldown_hours * 3600:
+                    return False, f"{cfg.sl_cooldown_hours}h SL cooldown active on {sym}"
+                if cp.outcome != "LOSS" and elapsed_sec < 4 * 3600:
+                    return False, f"4h Win cooldown active on {sym} (awaiting next 4H bar)"
+            except Exception:
+                pass
 
     # Finite vs Unlimited caps
     eff_max_open = 0 if (cfg.unlimited_paper_mode and cfg.max_open_positions == 0) else (
