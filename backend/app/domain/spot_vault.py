@@ -120,6 +120,7 @@ def evaluate_spot_bounce(
     depth: Optional[Dict[str, Any]],
     footprint: Optional[Dict[str, Any]],
     risk_blocked: set,
+    c4h: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """
     4-Point Pre-Buy Bounce Check ("পড়লে উঠবে কিনা?" Filter):
@@ -188,9 +189,23 @@ def evaluate_spot_bounce(
     else:
         failed.append("High-Risk News Shield Active")
 
+    # Crash-Protected Spot Shield (4H 200-EMA ~ 33-day trend proxy):
+    # Below 4H 200-EMA (Bear Crash), block normal -2% dip buying unless extreme panic oversold (RSI_1h <= 30)!
+    crash_cash_shield = False
+    if c4h and len(c4h) >= 60:
+        from .crypto_engines import _ema as _sp_ema
+        c4_closes = [c.close for c in c4h]
+        ema_macro = _sp_ema(c4_closes, min(len(c4_closes), 200)) or ltp
+        rsi_4h = _rsi(c4_closes, 14)
+        if ltp < ema_macro and rsi_4h > Decimal("30") and rsi_1h > Decimal("30"):
+            crash_cash_shield = True
+            failed.append(f"Crash Cash Shield: Below 4H Macro EMA (${_q(ema_macro, _px_prec(ema_macro))}) — Holding USDT Cash")
+
     checks_passed = len(passed)
     if dump_blocked or symbol.upper() in risk_blocked:
         stage = "DUMP_BLOCKED"
+    elif crash_cash_shield:
+        stage = "CRASH_CASH_SHIELD"
     elif checks_passed >= 4 and score >= 80:
         stage = "BUY_READY"
     elif checks_passed >= 3 and dip_from_high <= Decimal("-2.0"):
