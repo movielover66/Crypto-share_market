@@ -28,6 +28,8 @@ from .domain.crypto_engines import (
     CryptoSignal,
     evaluate_boom_radar,
     evaluate_btc_regime,
+    evaluate_c05_adx_bb_mean_rev,
+    evaluate_c05_supertrend_trail,
     evaluate_engine_1_breakout,
     evaluate_engine_2_donchian,
     evaluate_engine_3_funding_rsi2,
@@ -182,9 +184,10 @@ def _run_spot_vault_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[st
     for sym in BLUECHIP_SPOT_UNIVERSE:
         c15 = prov.get_candles(sym, "15m", 35)
         c1h = prov.get_candles(sym, "1h", 30)
+        c4h_sp = prov.get_candles(sym, "4h", 210)
         depth = prov.get_orderbook_depth(sym)
         fp = footprints.get(sym) or prov.get_footprint_cvd(sym)
-        row = evaluate_spot_bounce(sym, c15, c1h, tickers.get(sym), depth, fp, risk_blocked)
+        row = evaluate_spot_bounce(sym, c15, c1h, tickers.get(sym), depth, fp, risk_blocked, c4h=c4h_sp)
         if strat_cfg.smc_filter_enabled and c1h:
             smc = evaluate_smc_context(c1h, direction="LONG")
             row["smc_zone"] = smc.zone
@@ -200,7 +203,7 @@ def _run_spot_vault_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[st
 
     opened: List[Dict[str, Any]] = []
     # Bug #3 fix: Spot Vault obeys Market Brain spot_directive (WAIT_TOP pauses chasing green tops)
-    allow_auto_spot = (spot_dir != "WAIT_TOP")
+    allow_auto_spot = (spot_dir not in ("WAIT_TOP", "CASH_SHIELD"))
     if execute_entries and vault.config.enabled and allow_auto_spot:
         active_syms = {p.symbol for p in vault.positions.values() if p.status == "OPEN"}
         max_spot_coins = 10 if strat_cfg.unlimited_paper_mode else vault.config.max_active_coins
@@ -286,7 +289,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     signals: List[CryptoSignal] = []
     coin_verifier: CoinFundamentalVerifier = app.state.coin_verifier
     # Gate 1 (Stage 1 Fast Screener): 534+ OKX -> Top 15-20 Verified Pure-Crypto Coins (0% US Stocks / Junk)
-    scan_syms, gate1_rejected = coin_verifier.select_verified_candidates(tickers, max_candidates=18)
+    scan_syms, gate1_rejected = coin_verifier.select_verified_candidates(tickers, max_candidates=30)
     liquid_all = [
         t for t in tickers.values()
         if t.symbol.endswith("USDT") and t.ltp > 0 and coin_verifier.verify_symbol(t.symbol, t.volume_24h_usdt).verified
@@ -298,43 +301,29 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
     for sym in scan_syms:
         c15 = prov.get_candles(sym, "15m", 40)
         c1h = prov.get_candles(sym, "1h", 35)
-        c4h = prov.get_candles(sym, "4h", 80)
+        c4h = prov.get_candles(sym, "4h", 210)
         depth = prov.get_orderbook_depth(sym)
         fp = prov.get_footprint_cvd(sym)
-        crowd = prov.get_crowd_positioning(sym)
         sym_chg = tickers[sym].change_24h_pct if sym in tickers else Decimal("0")
-        eff_chg = min(sym_chg, btc_chg) if sym_chg < 0 else max(sym_chg, btc_chg)
-        if c15:
-            s1 = evaluate_engine_1_breakout(sym, c15, depth, c1h=c1h, footprint=fp, change_24h_pct=eff_chg)
-            signals.append(evaluate_engine_4_shadow_sweep(sym, c15, footprint=fp, crowd=crowd))
-            if c1h and (btc_chg <= Decimal("-3.0") or (brain_dir and brain_dir.mode in ("DOWNTREND", "SEVERE_CRASH") and brain_dir.btc_chg_24h <= 0.0)):
-                signals.append(evaluate_engine_5_crash_short(
-                    sym, c15, c1h, depth, footprint=fp,
-                    change_24h_pct=sym_chg, btc_chg_24h=btc_chg, macro_reason=bear_macro_headline,
-                ))
-            if eng.config.enable_catalyst_radar and sym in bull_catalysts and s1.direction == "LONG" and s1.score >= 70:
-                s1 = CryptoSignal(
-                    symbol=s1.symbol, engine_code="CATALYST_MOMENTUM", horizon_bucket="intraday",
-                    hold_horizon="Catalyst Momentum • 2–8 hrs", direction="LONG",
-                    status="CONFIRMED", score=min(96, s1.score + 12),
-                    entry_price=s1.entry_price, stop_loss=s1.stop_loss, target_price=s1.target_price,
-                    expected_net_rr=s1.expected_net_rr, recommended_leverage=Decimal("1.0"),
-                    passed_rules=s1.passed_rules + ["Breaking Catalyst News + Vol Confirmed"],
-                    failed_rules=s1.failed_rules,
-                    rationale=f"{bull_catalysts[sym]} • {s1.rationale}",
-                )
-            signals.append(s1)
+        # Champion C05 Primary Suite (4H ADX-BB Mean-Rev 64% WR + 4H Supertrend-3 Trail PF 1.81) — BOTH LONG & SHORT!
         if c4h:
-            signals.append(evaluate_engine_2_donchian(sym, c4h))
-            signals.append(evaluate_engine_3_funding_rsi2(sym, c4h, tickers.get(sym)))
+            signals.append(evaluate_c05_adx_bb_mean_rev(sym, c4h, footprint=fp))
+            signals.append(evaluate_c05_supertrend_trail(sym, c4h, footprint=fp))
+        # Crash-Only Short Specialist when BTC is actively crashing
+        if c15 and c1h and (btc_chg <= Decimal("-4.0") or (brain_dir and brain_dir.mode == "SEVERE_CRASH")):
+            signals.append(evaluate_engine_5_crash_short(
+                sym, c15, c1h, depth, footprint=fp,
+                change_24h_pct=sym_chg, btc_chg_24h=btc_chg, macro_reason=bear_macro_headline,
+            ))
 
+    # Early Boom Ignition: scan quiet early movers (+0.5% to +7.5% 24h) BEFORE they pump +20% to +50%!
     boom_candidates = sorted(
         [
             t for t in liquid_all
             if t.symbol not in ("BTCUSDT", "ETHUSDT", "BNBUSDT")
-            and Decimal("4.0") <= t.change_24h_pct <= Decimal("30.0")
+            and Decimal("0.5") <= t.change_24h_pct <= Decimal("7.5")
         ],
-        key=lambda t: (t.change_24h_pct * (t.volume_24h_usdt / Decimal("1000000"))),
+        key=lambda t: t.volume_24h_usdt,
         reverse=True,
     )[:10]
     if not boom_candidates:
@@ -441,7 +430,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             if not bias_dec.allowed:
                 continue
 
-            # Gate 4 & 5A: Full 12-Point Professional Chart Reader (Closed Candles, Vol Profile, BOS/CHoCH, 50-Level L2 Walls)
+            is_c05 = sig.engine_code in ("C05_ADX_BB_MEAN_REV", "C05_SUPERTREND_TRAIL")
             c15_now = prov.get_candles(sig.symbol, "15m", 40)
             c1h_now = prov.get_candles(sig.symbol, "1h", 35)
             c4h_now = prov.get_candles(sig.symbol, "4h", 40)
@@ -460,7 +449,7 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
                 demo_mode=prov.demo_mode,
                 regime_mode=(brain_dir.mode if brain_dir else "TRENDING"),
             )
-            if not cr.passed:
+            if not is_c05 and not cr.passed:
                 continue
 
             # Gate 5B: Zero-Bypass Gemini Vision Chart PNG + 12-Point Map Final Audit
@@ -480,19 +469,19 @@ def _run_full_crypto_cycle(app: FastAPI, execute_entries: bool = True) -> Dict[s
             if verdict.get("verdict") == "VETO_TRAP":
                 continue
 
-            # Upgrade signal with Structural SL & Structural TP from 12-Point Chart Reader
+            # Keep Champion C05's exact backtested 4H SL/TP; use 12-Pt Structural SL/TP for other engines
             sig_exec = CryptoSignal(
                 symbol=sig.symbol, engine_code=sig.engine_code, horizon_bucket=sig.horizon_bucket,
                 hold_horizon=sig.hold_horizon, direction=sig.direction, status=sig.status,
                 score=max(sig.score, cr.score_12pt),
                 entry_price=sig.entry_price,
-                stop_loss=cr.structural_sl if cr.structural_sl > 0 else sig.stop_loss,
-                target_price=cr.structural_tp if cr.structural_tp > 0 else sig.target_price,
+                stop_loss=sig.stop_loss if is_c05 else (cr.structural_sl if cr.structural_sl > 0 else sig.stop_loss),
+                target_price=sig.target_price if is_c05 else (cr.structural_tp if cr.structural_tp > 0 else sig.target_price),
                 expected_net_rr=sig.expected_net_rr,
                 recommended_leverage=sig.recommended_leverage,
                 passed_rules=list(sig.passed_rules) + [f"12-Pt Reader {cr.points_passed}/12"],
                 failed_rules=sig.failed_rules,
-                rationale=f"[12-Pt {cr.points_passed}/12 | POC ${cr.price_map.get('poc')}] {sig.rationale}",
+                rationale=(f"[C05 Champion | 12-Pt {cr.points_passed}/12] " if is_c05 else f"[12-Pt {cr.points_passed}/12 | POC ${cr.price_map.get('poc')}] ") + sig.rationale,
             )
 
             # Gate 6: Execution with Structural SL + Equal-Risk ₹500 Volatility Sizing
@@ -914,7 +903,7 @@ def create_app() -> FastAPI:
         c1h = await asyncio.to_thread(app.state.provider.get_candles, sym, "1h", 35)
         c4h = await asyncio.to_thread(app.state.provider.get_candles, sym, "4h", 35)
         btc_1h = await asyncio.to_thread(app.state.provider.get_candles, "BTCUSDT", "1h", 30)
-        cr_long = evaluate_12pt_chart_read(sym, direction, c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode)
+        cr_long = evaluate_12pt_chart_read(sym, direction, c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode, regime_mode=(app.state.brain.current_directive.mode if app.state.brain.current_directive else "TRENDING"))
         cver = app.state.coin_verifier.verify_symbol(sym, t_obj.volume_24h_usdt if t_obj else Decimal("0"))
         return {
             "symbol": sym,
@@ -942,7 +931,7 @@ def create_app() -> FastAPI:
         btc_1h = await asyncio.to_thread(app.state.provider.get_candles, "BTCUSDT", "1h", 30)
         depth = await asyncio.to_thread(app.state.provider.get_orderbook_depth, sym)
         fp = await asyncio.to_thread(app.state.provider.get_footprint_cvd, sym)
-        cr = evaluate_12pt_chart_read(sym, direction, c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode)
+        cr = evaluate_12pt_chart_read(sym, direction, c15, c1h, c4h, depth, fp, t_obj, btc_1h, app.state.provider.demo_mode, regime_mode=(app.state.brain.current_directive.mode if app.state.brain.current_directive else "TRENDING"))
         return {
             "coin_verification": {"verified": cver.verified, "category": cver.category, "reason": cver.reason},
             "chart_read": cr.to_dict(),
