@@ -185,9 +185,7 @@ def _raw_mode_from_score(score: int) -> str:
         return "HEALTHY_CORRECTION"
     if score > -15:
         return "SIDEWAYS_RANGE"
-    if score > -45:
-        return "DOWNTREND"
-    return "SEVERE_CRASH"
+    return "DOWNTREND"
 
 
 class MarketBrainEngine:
@@ -273,16 +271,11 @@ class MarketBrainEngine:
             self.pending_count = 0
             return cur
 
-        # v2.1 Rebound Guard: exit SEVERE_CRASH immediately when score recovers >= -25
-        if cur == "SEVERE_CRASH" and raw_score >= -25:
+        # v2.4 Real-Crash Guard: if actual crash conditions cleared, exit SEVERE_CRASH immediately
+        if cur == "SEVERE_CRASH":
             self.pending_mode = None
             self.pending_count = 0
             return candidate
-        # Exit buffer out of SEVERE_CRASH (-45 -> must recover above -30)
-        if cur == "SEVERE_CRASH" and raw_score < -30:
-            self.pending_mode = None
-            self.pending_count = 0
-            return cur
 
         # 10-point buffer out of STRONG_UPTREND (+40 -> must drop below +30)
         if cur == "STRONG_UPTREND" and raw_score > 30:
@@ -337,8 +330,8 @@ class MarketBrainEngine:
         self.current_directive.breadth_total_coins = len(usdt_all)
         self.current_directive.updated_at_ist = now_ist.strftime("%H:%M:%S IST")
 
-        # Instant Emergency Crash Override (< 10 seconds!)
-        if btc_chg <= -5.0 and red_pct >= 72.0 and self.current_directive.mode != "SEVERE_CRASH":
+        # Instant Emergency Crash Override (< 10 seconds) using 2-year P1 / -2.5 sigma tail thresholds
+        if ((btc_chg <= -6.36) or (btc_chg <= -5.65 and eth_chg <= -8.82)) and self.current_directive.mode != "SEVERE_CRASH":
             return True, self.current_directive
 
         # Sudden major move (>= 1.5% BTC shift since last pulse/deep sync) -> trigger immediate deep sync
@@ -394,6 +387,9 @@ class MarketBrainEngine:
         btc_roc_4h = 0.0
         if len(closes_1h) >= 5 and float(closes_1h[-5]) > 0:
             btc_roc_4h = ((float(closes_1h[-1]) - float(closes_1h[-5])) / float(closes_1h[-5])) * 100.0
+        eth_roc_4h = 0.0
+        if len(eth_c1h) >= 5 and float(eth_c1h[-5]) > 0:
+            eth_roc_4h = ((float(eth_c1h[-1]) - float(eth_c1h[-5])) / float(eth_c1h[-5])) * 100.0
         if btc_roc_4h >= 1.2:
             f1 += 4
         elif btc_roc_4h <= -1.2:
@@ -471,14 +467,29 @@ class MarketBrainEngine:
             raw_score = 20
         if red_pct >= 62.0 and btc_chg <= 0.0 and raw_score > 10:
             raw_score = 10
+        # Normal pullback sanity guard: if BTC > -3.5% and >= 38% coins green, never paint extreme -48 panic score
+        if btc_chg > -3.5 and green_pct >= 38.0 and raw_score < -25:
+            raw_score = -25
 
-        emergency_crash = (btc_chg <= -5.0 and red_pct >= 72.0) or (btc_chg <= -6.5) or (btc_roc_4h <= -3.5 and red_pct >= 70.0)
+        # Rebound Recovery Guard: if BTC & ETH both bounce >= +1.5% in 4H with positive CVD (+5%+),
+        # unlock SIDEWAYS_RANGE immediately so we don't miss the rebound LONGs due to lagging 24h red %!
+        rebound_active = (btc_roc_4h >= 1.5 and eth_roc_4h >= 1.5 and avg_cvd >= 5.0)
+        if rebound_active and raw_score < -10:
+            raw_score = -10
+
+        # 2-Year Empirical P1 / -2.5 Sigma Crash Definition (BTC SD=2.24%, P1=-6.36%; ETH SD=3.51%, -2.5s=-8.82%):
+        # Crash triggers ONLY on a genuine statistical tail event — never on normal -2% to -4% volatility.
+        emergency_crash = (not rebound_active) and (
+            (btc_chg <= -6.36)
+            or (btc_chg <= -5.65 and eth_chg <= -8.82)
+            or (btc_roc_4h <= -4.0 and eth_roc_4h <= -5.0)
+        )
         if emergency_crash and raw_score > -48:
             raw_score = -55
 
         # EMA Score Smoothing (0.40 * raw + 0.60 * prev_ema) prevents 1-minute CVD flickers;
-        # bypassed immediately on true emergency crashes for zero lag!
-        if emergency_crash or self.ema_score is None:
+        # bypassed immediately on true emergency crashes or confirmed 4H rebounds for zero lag!
+        if emergency_crash or rebound_active or self.ema_score is None:
             smoothed_score = int(raw_score)
             self.ema_score = float(raw_score)
         else:
@@ -486,6 +497,10 @@ class MarketBrainEngine:
             smoothed_score = int(round(self.ema_score))
 
         confirmed_mode = self._apply_hysteresis(smoothed_score, emergency_crash)
+        if rebound_active and confirmed_mode in ("DOWNTREND", "SEVERE_CRASH"):
+            confirmed_mode = "SIDEWAYS_RANGE"
+            self.pending_mode = None
+            self.pending_count = 0
         bias, allow_l, allow_s, allow_b, spot_dir = _mode_permissions(confirmed_mode)
 
         # Build human-readable primary market cause
